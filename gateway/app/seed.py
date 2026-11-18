@@ -1,5 +1,5 @@
 import asyncio
-from .db import engine
+from app.db.database import engine
 
 async def main():
   # placeholder
