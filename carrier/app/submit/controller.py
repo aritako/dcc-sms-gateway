@@ -12,6 +12,6 @@ async def submit(request: SubmitRequest):
 
   return JSONResponse(
     status_code=200,
-    content={"message_id": request.message_id}
+    content={"carrier_id": request.message_id}
   )
 
