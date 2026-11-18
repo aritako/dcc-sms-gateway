@@ -1,0 +1,59 @@
+# Env
+x-env: &env
+  DATABASE_URL: postgresql+asyncpg://sms:sms@postgres:5432/sms
+  REDIS_URL: redis://redis:6379/0
+  GATEWAY_URL: http://api:8000
+  CARRIER_URL: http://carrier:8001
+  DLR_SECRET: dev-secret-hello-world
+
+services:
+  # Databases
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: sms
+      POSTGRES_PASSWORD: sms
+      POSTGRES_DB: sms
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sms -d sms"]
+      interval: 2s
+      retries: 20
+
+  redis:
+    image: redis:8-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 20
+
+  # Gateway Services
+  api:
+    build: ./gateway
+    environment: *env
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis: 
+        condition: service_healthy
+  
+  worker:
+    build: ./gateway
+    environment: *env
+    command: python -m app.worker.worker
+    depends_on:
+      redis: 
+        condition: service_healthy
+  
+  # Carrier Services
+  carrier:
+    build: ./carrier
+    environment: *env
+    ports:
+      - "8001:8001"
+  
+
+  
+
