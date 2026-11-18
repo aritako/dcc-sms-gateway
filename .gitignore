@@ -1,9 +1,13 @@
 .venv/
 __pycache__/
-pytest_cache/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 node_modules/
 .next/
 .env
+.env.local
 
 # Session transcripts: raw exports stay local; commit only the submission zip.
 transcript/*
