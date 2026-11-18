@@ -19,6 +19,10 @@ Mini SMS gateway for the DCC take-home: a FastAPI gateway and mock carrier, Post
 - #1–#2 are prefactoring. The carrier (#3–#4) can run in parallel with the first messaging slice (#5).
 - The external assignment brief is not in the repo; record design decisions in `DESIGN.md`.
 
+## Minimal changes
+
+Make the smallest diff that satisfies the ticket. Build the minimum working example the next slice needs: add a helper, setting, dependency, Make target or abstraction when an acceptance criterion or a second caller calls for it. Reread your diff before calling the ticket done and delete what no criterion needs.
+
 ## Invariants
 
 - PostgreSQL is the queue (`FOR UPDATE SKIP LOCKED`, `available_at`/`next_attempt_at`); Redis is for the global rate limiter and SSE.
@@ -30,7 +34,7 @@ Mini SMS gateway for the DCC take-home: a FastAPI gateway and mock carrier, Post
 
 ## Done
 
-A ticket is done when its acceptance criteria pass, tests cover the change, and `README`/`DESIGN` stay accurate. Keep each change inside its ticket's slice.
+A ticket is done when its acceptance criteria pass, tests cover the change, and `README`/`DESIGN` stay accurate.
 
 ## Session transcripts
 
