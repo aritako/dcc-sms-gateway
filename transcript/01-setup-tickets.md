@@ -3,10 +3,11 @@
 - **Date:** 2026-11-18
 - **Agent/model:** opencode-go/deepseek-v4.1-flash (T3 Code / OpenCode)
 - **Goal:** Read the DCC Mini SMS Gateway take-home, inspect the scaffold, turn the spec into tracer-bullet GitHub issues, and set up project agent docs and transcript logging.
-- **Outcome:** 27 issues created (#1–#27, 22 Required + 5 Bonus) with domain/priority/difficulty labels and native blocked-by edges; `AGENTS.md`; transcript convention; first transcript.
+- **Outcome:** 27 issues created (#1–#27, 22 Required + 5 Bonus) with domain/priority/difficulty labels and native blocked-by edges; `AGENTS.md`; transcript convention; first Markdown summary and complete JSON export.
 - **Issues/commits:** [#1–#27](https://github.com/aritako/dcc-sms-gateway/issues); commit `docs: add agent guide and first session transcript` on `main`.
+- **Complete export:** [01-setup-tickets.json](01-setup-tickets.json)
 
-> This is a structured session log. User messages are reproduced; assistant messages and tool output are condensed where they were long. The issue bodies on GitHub are the full acceptance criteria, and the sub-agent findings are summarized in the appendices.
+> This is the **readable summary**. The authoritative complete session export is [`01-setup-tickets.json`](01-setup-tickets.json), generated with `opencode session export` from the actual OpenCode session. It contains every user/assistant message and tool call. User messages here are reproduced; assistant messages and tool output are condensed where they were long. The issue bodies on GitHub are the full acceptance criteria, and the sub-agent findings are summarized in the appendices.
 
 ## Transcript
 
@@ -185,9 +186,18 @@ git switch feat/walking-skeleton-01
 git rebase main
 ```
 
+### 9. Transcript format correction
+
+**User**
+
+> I dont know if that formatting is proper, according to the spec: "If you use one, you must include the complete AI coding transcript or session export with your submission" i think it pertains to the actual session?
+
+I confirmed the spec means the actual session. The original Markdown file was a curated summary, so I added the complete sanitized OpenCode export as `transcript/01-setup-tickets.json` and kept this Markdown as the readable companion. The transcript convention and `AGENTS.md` were updated to require the complete JSON export for future sessions.
+
 ## Artifacts
 
 - [AGENTS.md](../AGENTS.md) — project scope, invariants and transcript rule.
+- [01-setup-tickets.json](01-setup-tickets.json) — complete OpenCode session export with the full message and tool-call history.
 - [transcript/README.md](README.md) — transcript format and template.
 - [GitHub issues #1–#27](https://github.com/aritako/dcc-sms-gateway/issues) — full acceptance criteria and native blocked-by edges.
 - No implementation code was changed in this session.
@@ -223,7 +233,7 @@ Minimum API surface: `POST /v1/messages` (#6), `POST /v1/messages/batch` (#8), `
 - Start with #1, then #2; #3–#4 can run in parallel with #5.
 - Rebase `feat/walking-skeleton-01` onto `main` to pick up `AGENTS.md` and this transcript.
 - Keep issue acceptance criteria as the definition of done; update `DESIGN.md` and `README.md` as decisions land.
-- Log the next session as `transcript/02-<slug>.md`.
+- Log the next session as `transcript/02-<slug>.json` plus the readable `02-<slug>.md` summary.
 
 ## Appendix A — Sub-agent scaffold findings
 

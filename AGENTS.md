@@ -34,4 +34,10 @@ A ticket is done when its acceptance criteria pass, tests cover the change, and 
 
 ## Session transcripts
 
-When the user signals the session is over ("we're done", "log this session", or similar), write `transcript/NN-kebab-case.md` using the template in `transcript/README.md`. Number monotonically from `01`; never renumber. Include the full user/assistant conversation and the commands/tools used, and redact secrets. If the thread closes before it can be written, reconstruct it at the start of the next session from the session export.
+When the user signals the session is over ("we're done", "log this session", or similar), export the complete session to `transcript/NN-kebab-case.json`:
+
+```bash
+opencode session export "$OPENCODE_SESSION_ID" > transcript/NN-kebab-case.json
+```
+
+Redact secrets before committing. Also write a readable summary to `transcript/NN-kebab-case.md` using the template in `transcript/README.md`. Number monotonically from `01`; never renumber. The JSON is the authoritative export the assignment asks for; the Markdown is the human-readable companion. Do not use `opencode session export --sanitize` blindly: it also redacts user prompts. If the thread closes before the export can be written, reconstruct it at the start of the next session.
