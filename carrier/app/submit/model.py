@@ -9,3 +9,6 @@ class SubmitRequest(BaseModel):
   from_: str = Field(alias="from")
   text: str
   encoding: Literal["GSM7", "UCS2"]
+
+class SubmitResponse(BaseModel):
+  carrier_id: str
