@@ -4,7 +4,7 @@ from .model import SubmitRequest
 from fastapi.responses import JSONResponse
 router = APIRouter()
 
-@router.post("/")
+@router.post("")
 async def submit(request: SubmitRequest):
 
   # Random delay between 20ms and 300ms, as per spec
