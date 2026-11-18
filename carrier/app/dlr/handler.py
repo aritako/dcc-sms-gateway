@@ -1,30 +1,70 @@
-from pydantic_settings
-from app.settings import get_settings
-from .model import DeliveryReceiptPayload
-import random, datetime
-import hmac
+import asyncio
+import logging
+import random
+from datetime import UTC, datetime
 
-class DeliveryReceiptSender():
-  def __init__(self,):
-    self.settings = get_settings()
+import httpx
+
+from app.settings import Settings, get_settings
+from .client import GatewayDLRClient
+from .model import DeliveryReceiptPayload
+
+logger = logging.getLogger(__name__)
+
+
+class DeliveryReceiptSender:
+  def __init__(self, client: GatewayDLRClient, settings: Settings | None = None) -> None:
+    self._client = client
+    self._settings = settings or get_settings()
+    self._tasks: set[asyncio.Task[None]] = set()
 
   def create(self, carrier_id: str) -> DeliveryReceiptPayload:
-    # 90% Delivered, 7% Undelivered, 3% Expired
+    # Default: 90% Delivered, 7% Undelivered, 3% Expired
     status = random.choices(
-        ["DELIVRD", "UNDELIV", "EXPIRED"],
-        weights=[self.settings.w_delivrd, self.settings.w_undeliv, self.settings.w_expired],
+      ["DELIVRD", "UNDELIV", "EXPIRED"],
+      weights=[
+        self._settings.w_delivrd,
+        self._settings.w_undeliv,
+        self._settings.w_expired,
+      ],
     )[0]
     return DeliveryReceiptPayload(
       carrier_id=carrier_id,
       status=status,
-      timestamp=datetime.datetime.now()
+      timestamp=datetime.now(UTC),
     )
-    
 
-  def send(self, payload: DeliveryReceiptPayload):
-    raw_request = payload.model_dump_json().encode()
-    sha256_payload = hmac.new(self.settings.dlr_secret.encode(), raw_request, "sha256").hexdigest()
-    header = {"Content-Type": "application/json", "X-Signature": sha256_payload}
+  def delay_seconds(self) -> float:
+    return random.uniform(self._settings.dlr_min_s, self._settings.dlr_max_s)
 
-    # Insert client sending logic
 
+  async def send(self, payload: DeliveryReceiptPayload) -> None:
+    try:
+      await self._client.deliver(payload)
+    except httpx.HTTPError:
+      logger.warning("delivery receipt failed for carrier_id=%s", payload.carrier_id)
+
+
+  async def send_after(self, payload: DeliveryReceiptPayload, delay: float) -> None:
+    if delay > 0:
+      await asyncio.sleep(delay)
+    await self.send(payload)
+    # Duplicates reuse the same payload, so body and signature are identical.
+    if random.random() < self._settings.p_dup_dlr:
+      await self.send(payload)
+
+  def schedule(self, payload: DeliveryReceiptPayload, delay: float | None = None) -> None:
+    # Either delay sending from 0.5s to 10s (default), or use the caller's override.
+    delay = delay if delay else random.uniform(self._settings.dlr_min_s, self._settings.dlr_max_s)
+    task = asyncio.create_task(
+      self.send_after(payload, delay)
+    )
+    self._tasks.add(task)
+    task.add_done_callback(self._tasks.discard)
+
+  async def aclose(self) -> None:
+    """Cancel in-flight receipts so shutdown does not wait on their delays."""
+    for task in list(self._tasks):
+      task.cancel()
+    if self._tasks:
+      await asyncio.gather(*self._tasks, return_exceptions=True)
