@@ -4,3 +4,8 @@ pytest_cache/
 node_modules/
 .next/
 .env
+
+# Session transcripts: raw exports stay local; commit only the submission zip.
+transcript/*
+!transcript/README.md
+!transcript/*.zip
