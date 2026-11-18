@@ -15,7 +15,25 @@ class Settings(BaseSettings):
 
     dlr_secret: str = "dev-dlr-secret"
     gateway_url: str = "http://localhost:8000"
-    gateway_submit_rate: int = 20
+
+    rate_limit_submit_per_sec: int = 50
+    latency_min: float = 0.02
+    latency_max: float = 0.3
+
+    p_503: float = 0.03
+    p_400: float = 0.01
+    p_timeout: float = 0.01
+    hang_seconds: float = 10
+
+    dlr_min_s: float = 0.5
+    dlr_max_s: float = 10
+    p_dup_dlr: float = 0.10
+    p_early_dlr: float = 0.05
+    w_delivrd: float = 0.90
+    w_undeliv: float = 0.07
+    w_expired: float = 0.03
+
+    dedupe_message_id: bool = True
 
 
 def load_settings(**kwargs: Any) -> Settings:
