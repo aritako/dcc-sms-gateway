@@ -1,0 +1,67 @@
+name: dcc-sms-gateway
+
+# Shared by the gateway API and worker. The carrier gets its own settings later.
+x-gateway-env: &gateway-env
+  DATABASE_URL: postgresql+asyncpg://sms:sms@postgres:5432/sms
+  REDIS_URL: redis://redis:6379/0
+  CARRIER_URL: http://carrier:8001
+  DLR_SECRET: dev-dlr-secret
+  ADMIN_API_KEY: dev-admin-key
+  CARRIER_SUBMIT_RATE: "20"
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: sms
+      POSTGRES_PASSWORD: sms
+      POSTGRES_DB: sms
+    ports:
+      - "5432:5432"
+    volumes:
+      # Postgres 18+ expects a single mount here; it manages versioned subdirs.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sms -d sms"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: ./gateway
+    environment: *gateway-env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./gateway
+    environment: *gateway-env
+    command: ["python", "-m", "app.worker.worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  carrier:
+    build: ./carrier
+    ports:
+      - "8001:8001"
+
+volumes:
+  pgdata:

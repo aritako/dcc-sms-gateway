@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Lint, typecheck and test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: sms
+          POSTGRES_PASSWORD: sms
+          POSTGRES_DB: sms
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sms -d sms"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://sms:sms@localhost:5432/sms_test
+      TEST_REDIS_URL: redis://localhost:6379/15
+      DLR_SECRET: ci-dlr-secret
+      ADMIN_API_KEY: ci-admin-key
+      CARRIER_URL: http://localhost:8001
+      CARRIER_SUBMIT_RATE: "20"
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: "**/uv.lock"
+
+      - name: Install gateway dependencies
+        working-directory: gateway
+        run: uv sync --locked
+
+      - name: Lint gateway
+        working-directory: gateway
+        run: uv run ruff check .
+
+      - name: Typecheck gateway
+        working-directory: gateway
+        run: uv run mypy app
+
+      - name: Test gateway
+        working-directory: gateway
+        run: uv run pytest
+
+      - name: Install carrier dependencies
+        working-directory: carrier
+        run: uv sync --locked
+
+      - name: Test carrier
+        working-directory: carrier
+        run: uv run pytest
