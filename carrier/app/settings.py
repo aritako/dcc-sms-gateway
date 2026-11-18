@@ -4,7 +4,6 @@ from typing import Any
 from pydantic import ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 class Settings(BaseSettings):
     """Runtime configuration, read from the environment (or a local .env)."""
 
@@ -14,10 +13,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    database_url: str
-    redis_url: str
-    dlr_secret: str
-    admin_api_key: str
+    dlr_secret: str = "dev-dlr-secret"
     gateway_url: str = "http://localhost:8000"
     gateway_submit_rate: int = 20
 
