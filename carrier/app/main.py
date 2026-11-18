@@ -1,8 +1,9 @@
 from fastapi import FastAPI
-from app.submit.controller import submitRouter
+from app.submit import controller
+
 app = FastAPI(title="DCC SMS Gateway")
 
-app.include_router(submitRouter, prefix="/submit", tags=["Carrier"])
+app.include_router(controller.router, prefix="/submit", tags=["submit"])
 
 @app.get("/")
 async def root():
