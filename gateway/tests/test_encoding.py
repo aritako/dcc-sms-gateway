@@ -67,6 +67,10 @@ def test_emoji_counts_as_two_utf16_units() -> None:
   assert service.count_segments("😀" * 36) == (Encoding.UCS2, 2)
 
 
+def test_lone_surrogate_counts_as_one_unit_instead_of_raising() -> None:
+  assert service.message_length("\ud83d", Encoding.UCS2) == 1
+
+
 def test_empty_text_is_rejected() -> None:
   with pytest.raises(ValueError, match="must not be empty"):
     service.count_segments("")

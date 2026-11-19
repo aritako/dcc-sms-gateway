@@ -60,7 +60,7 @@ async def _quote(
   *,
   to: str = BANGLADESH,
   text: str = "hello",
-  headers: dict[str, str] | None = None,
+  headers: dict[str, str | bytes] | None = None,
   **fields: object,
 ) -> Response:
   return await client.post(
@@ -123,6 +123,13 @@ async def test_longest_matching_prefix_wins(
   assert (await _quote(client, to="+8809123456789")).json()["total_price"] == 3
 
 
+async def test_quotes_the_second_seeded_prefix(client: AsyncClient, tenant: Tenant) -> None:
+  response = await _quote(client, to="+971501234567")
+
+  assert response.json()["price_per_segment"] == 5
+  assert response.json()["total_price"] == 5
+
+
 async def test_currency_comes_from_the_tenant(
   client: AsyncClient, session: AsyncSession, tenant: Tenant
 ) -> None:
@@ -159,6 +166,13 @@ async def test_admin_key_rejects_an_unknown_tenant(client: AsyncClient, tenant: 
 
 async def test_wrong_admin_key_is_unauthorized(client: AsyncClient, tenant: Tenant) -> None:
   response = await _quote(client, headers={"x-admin-key": "wrong"}, tenant_id=str(tenant.id))
+
+  assert response.status_code == 401
+
+
+async def test_non_ascii_admin_key_is_unauthorized(client: AsyncClient, tenant: Tenant) -> None:
+  # Latin-1 bytes reach the app as "café"; compare_digest on str would raise.
+  response = await _quote(client, headers={"x-admin-key": b"caf\xe9"}, tenant_id=str(tenant.id))
 
   assert response.status_code == 401
 
@@ -204,3 +218,16 @@ async def test_quote_writes_nothing(
     assert await session.scalar(select(func.count()).select_from(model)) == 0
   balance = await session.scalar(select(Tenant.balance_cents).where(Tenant.id == tenant.id))
   assert balance == 10_000
+
+
+@pytest.mark.parametrize(
+  ("to", "text"),
+  [("+33123456789", "hi"), ("+8801712345678", "")],
+)
+async def test_rejected_quotes_write_nothing(
+  client: AsyncClient, session: AsyncSession, tenant: Tenant, to: str, text: str
+) -> None:
+  assert (await _quote(client, to=to, text=text)).status_code == 422
+
+  for model in (Message, MessageEvent, LedgerEntry):
+    assert await session.scalar(select(func.count()).select_from(model)) == 0
