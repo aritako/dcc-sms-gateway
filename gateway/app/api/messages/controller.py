@@ -1,14 +1,16 @@
+from uuid import uuid7
+
 from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.quote import UnknownDestination
 from app.db.database import get_session
+from app.db.models import Encoding, MessageStatus
 
 from .handler import MessagesHandler
 from .models import MessagesRequest, MessagesResponse, QuoteRequest, QuoteResponse
-from uuid import uuid7
-from app.db.models import MessageStatus, Encoding
+
 router = APIRouter()
 
 

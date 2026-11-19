@@ -1,18 +1,18 @@
 import secrets
-from uuid import UUID
+from uuid import UUID, uuid7
 
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.messages.models import MessagesRequest
+from app.core.billing import BillingService
 from app.core.encoding import EncodingService
 from app.core.quote import Quote, QuoteService
-from app.core.billing import BillingService
-from app.db.models import ApiKey, Tenant, MessageStatus, Message, MessageEvent
-from app.api.messages.models import MessagesRequest
+from app.db.models import ApiKey, Message, MessageEvent, MessageStatus, Tenant
 from app.security import hash_api_key
 from app.settings import get_settings
-from uuid import uuid7
+
 
 class MessagesHandler:
   def __init__(self, db: AsyncSession) -> None:
