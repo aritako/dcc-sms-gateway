@@ -6,12 +6,13 @@ from uuid import UUID
 
 import pytest
 from httpx import AsyncClient, Response
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_session
 from app.db.models import (
   ApiKey,
+  IdempotencyKey,
   LedgerEntry,
   LedgerKind,
   Message,
@@ -33,17 +34,24 @@ async def session() -> AsyncIterator[AsyncSession]:
     yield session
 
 
-async def _create_tenant(session: AsyncSession, *, balance_cents: int = 10_000) -> Tenant:
+async def _create_tenant(
+  session: AsyncSession,
+  *,
+  name: str = "Test Tenant",
+  api_key: str = API_KEY,
+  balance_cents: int = 10_000,
+) -> Tenant:
   tenant = Tenant(
-    name="Test Tenant",
+    name=name,
     opening_balance_cents=balance_cents,
     balance_cents=balance_cents,
   )
   session.add(tenant)
   await session.flush()
-  session.add(ApiKey(tenant_id=tenant.id, key_hash=hash_api_key(API_KEY)))
+  session.add(ApiKey(tenant_id=tenant.id, key_hash=hash_api_key(api_key)))
   # "hello" is one GSM-7 segment, so every send in this file costs 3 cents.
-  session.add(Price(prefix="+880", price_per_segment_cents=3))
+  if await session.scalar(select(Price).where(Price.prefix == "+880")) is None:
+    session.add(Price(prefix="+880", price_per_segment_cents=3))
   await session.commit()
   return tenant
 
@@ -57,12 +65,16 @@ async def _send(
   client: AsyncClient,
   *,
   key: str | None = API_KEY,
+  idempotency_key: str | None = None,
   **overrides: object,
 ) -> Response:
+  headers = {"X-API-Key": key} if key is not None else {}
+  if idempotency_key is not None:
+    headers["Idempotency-Key"] = idempotency_key
   return await client.post(
     SEND_PATH,
     json={**MESSAGE, **overrides},
-    headers={"X-API-Key": key} if key is not None else {},
+    headers=headers,
   )
 
 
@@ -72,6 +84,27 @@ async def _count(session: AsyncSession, model: type) -> int:
 
 async def _balance(session: AsyncSession, tenant: Tenant) -> int:
   return await session.scalar(select(Tenant.balance_cents).where(Tenant.id == tenant.id))
+
+
+async def _top_up(session: AsyncSession, tenant: Tenant, amount_cents: int) -> None:
+  balance_after = await session.scalar(
+    update(Tenant)
+    .where(Tenant.id == tenant.id)
+    .values(balance_cents=Tenant.balance_cents + amount_cents)
+    .returning(Tenant.balance_cents)
+    .execution_options(synchronize_session=False)
+  )
+  assert balance_after is not None
+  session.add(
+    LedgerEntry(
+      tenant_id=tenant.id,
+      message_id=None,
+      kind=LedgerKind.CREDIT.value,
+      amount_cents=amount_cents,
+      balance_after_cents=balance_after,
+    )
+  )
+  await session.commit()
 
 
 async def test_missing_key_is_unauthorized(client: AsyncClient) -> None:
@@ -200,3 +233,141 @@ async def test_concurrent_sends_cannot_overdraw(client: AsyncClient, session: As
   assert await _count(session, LedgerEntry) == 10
   charged = await session.scalar(select(func.sum(LedgerEntry.amount_cents)))
   assert charged == -30
+
+
+async def test_same_key_and_body_replays_and_writes_nothing(
+  client: AsyncClient, session: AsyncSession, tenant: Tenant
+) -> None:
+  first = await _send(client, idempotency_key="same-key")
+  second = await _send(client, idempotency_key="same-key")
+
+  assert first.status_code == 202
+  assert second.status_code == 202
+  assert second.json() == first.json()
+  assert await _count(session, Message) == 1
+  assert await _count(session, MessageEvent) == 1
+  assert await _count(session, LedgerEntry) == 1
+  assert await _balance(session, tenant) == 9_997
+
+
+async def test_stored_snapshot_has_status_and_body(
+  client: AsyncClient, session: AsyncSession, tenant: Tenant
+) -> None:
+  response = await _send(client, idempotency_key="snapshot-key")
+
+  stored = await session.get(IdempotencyKey, (tenant.id, "snapshot-key"))
+  assert stored is not None
+  assert stored.response_status == 202
+  assert stored.response_body == response.json()
+
+
+async def test_oversized_idempotency_key_is_422_and_writes_nothing(
+  client: AsyncClient, session: AsyncSession, tenant: Tenant
+) -> None:
+  response = await _send(client, idempotency_key="k" * 256)
+
+  assert response.status_code == 422
+  assert await _count(session, Message) == 0
+  assert await _count(session, MessageEvent) == 0
+  assert await _count(session, LedgerEntry) == 0
+  assert await _balance(session, tenant) == 10_000
+
+
+async def test_empty_idempotency_key_is_422_and_writes_nothing(
+  client: AsyncClient, session: AsyncSession, tenant: Tenant
+) -> None:
+  response = await _send(client, idempotency_key="")
+
+  assert response.status_code == 422
+  assert await _count(session, Message) == 0
+  assert await _count(session, MessageEvent) == 0
+  assert await _count(session, LedgerEntry) == 0
+  assert await _balance(session, tenant) == 10_000
+
+
+async def test_same_key_with_different_body_is_409_and_writes_nothing(
+  client: AsyncClient, session: AsyncSession, tenant: Tenant
+) -> None:
+  first = await _send(client, idempotency_key="reused-key")
+  second = await _send(client, idempotency_key="reused-key", text="different")
+
+  assert first.status_code == 202
+  assert second.status_code == 409
+  assert second.json() == {"error": "IDEMPOTENCY_KEY_REUSED"}
+  assert await _count(session, Message) == 1
+  assert await _count(session, MessageEvent) == 1
+  assert await _count(session, LedgerEntry) == 1
+  assert await _balance(session, tenant) == 9_997
+
+
+async def test_concurrent_duplicates_create_one_message_and_one_charge(
+  client: AsyncClient, session: AsyncSession, tenant: Tenant
+) -> None:
+  responses = await asyncio.gather(
+    *(_send(client, idempotency_key="racing-key") for _ in range(10))
+  )
+
+  assert {response.status_code for response in responses} == {202}
+  assert len({response.json()["id"] for response in responses}) == 1
+  assert await _count(session, Message) == 1
+  assert await _count(session, MessageEvent) == 1
+  assert await _count(session, LedgerEntry) == 1
+  assert await _balance(session, tenant) == 9_997
+
+
+async def test_concurrent_duplicates_replay_even_when_the_balance_runs_out(
+  client: AsyncClient, session: AsyncSession
+) -> None:
+  tenant = await _create_tenant(session, balance_cents=3)  # room for exactly one send
+
+  responses = await asyncio.gather(
+    *(_send(client, idempotency_key="last-cents") for _ in range(5))
+  )
+
+  assert {response.status_code for response in responses} == {202}
+  assert len({response.json()["id"] for response in responses}) == 1
+  assert await _count(session, Message) == 1
+  assert await _balance(session, tenant) == 0
+
+
+async def test_same_key_is_independent_per_tenant(
+  client: AsyncClient, session: AsyncSession, tenant: Tenant
+) -> None:
+  other = await _create_tenant(session, name="Other Tenant", api_key="other-key")
+
+  first = await _send(client, idempotency_key="shared-key")
+  second = await _send(client, key="other-key", idempotency_key="shared-key")
+
+  assert first.status_code == 202
+  assert second.status_code == 202
+  assert first.json()["id"] != second.json()["id"]
+  assert await _count(session, Message) == 2
+  assert await _count(session, MessageEvent) == 2
+  assert await _count(session, LedgerEntry) == 2
+  assert await _balance(session, tenant) == 9_997
+  assert await _balance(session, other) == 9_997
+
+
+async def test_402_is_not_stored_and_the_same_key_works_after_top_up(
+  client: AsyncClient, session: AsyncSession
+) -> None:
+  tenant = await _create_tenant(session, balance_cents=2)
+
+  rejected = await _send(client, idempotency_key="retry-key")
+  assert rejected.status_code == 402
+  assert await _count(session, Message) == 0
+  assert await _count(session, LedgerEntry) == 0
+  assert await session.get(IdempotencyKey, (tenant.id, "retry-key")) is None
+
+  await _top_up(session, tenant, 998)
+
+  accepted = await _send(client, idempotency_key="retry-key")
+  assert accepted.status_code == 202
+  assert await _count(session, Message) == 1
+  # The top-up CREDIT and the send CHARGE.
+  assert await _count(session, LedgerEntry) == 2
+  assert await _balance(session, tenant) == 997
+  ledger_sum = await session.scalar(
+    select(func.sum(LedgerEntry.amount_cents)).where(LedgerEntry.tenant_id == tenant.id)
+  )
+  assert ledger_sum == 995

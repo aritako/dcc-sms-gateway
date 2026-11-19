@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import (
   BigInteger,
@@ -19,6 +20,7 @@ from sqlalchemy import (
   func,
 )
 from sqlalchemy import text as sa_text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -224,4 +226,31 @@ class LedgerEntry(Base):
   kind: Mapped[str] = mapped_column(String(8))
   amount_cents: Mapped[int] = mapped_column(BigInteger)
   balance_after_cents: Mapped[int] = mapped_column(BigInteger)
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IdempotencyKey(Base):
+  """A reserved key and, once accepted, its 2xx response snapshot.
+
+  The composite primary key is the ticket's UNIQUE (tenant_id, key): a
+  duplicate blocks on the insert before doing any work, so exactly one
+  transaction commits the message and charge while the losers replay it.
+  """
+
+  __tablename__ = "idempotency_keys"
+  __table_args__ = (
+    CheckConstraint(
+      "(response_status IS NULL) = (response_body IS NULL)",
+      name="ck_idempotency_keys_response_complete",
+    ),
+  )
+
+  tenant_id: Mapped[uuid.UUID] = mapped_column(
+    ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+  )
+  key: Mapped[str] = mapped_column(Text, primary_key=True)
+  request_hash: Mapped[str] = mapped_column(String(64))
+  # Reserved rows have neither; completed rows have both.
+  response_status: Mapped[int | None] = mapped_column(Integer)
+  response_body: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
