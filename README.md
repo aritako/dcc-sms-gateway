@@ -24,6 +24,20 @@ curl localhost:8000/healthz
 `GET /healthz` returns `503` naming the dependency that is down, e.g.
 `{"db":"ok","redis":"error"}`.
 
+## Seed data
+
+`make seed` creates two tenants, their demo API keys and the price table. It is
+idempotent: re-running it never duplicates a row and never resets a balance.
+
+| Tenant | Opening balance | Demo API key |
+| --- | --- | --- |
+| Acme Bank | 100,000 cents | `dcc_acme_demo_key` |
+| ShopFast | 1,000,000 cents | `dcc_shopfast_demo_key` |
+
+Prices are `+880` at 3 cents per segment and `+971` at 5 cents per segment. API
+keys are stored as SHA-256 hashes; the plaintext values above are only for local
+development and must not be used outside it.
+
 ## Layout
 
 - `gateway/` — API, workers, migrations, tests.

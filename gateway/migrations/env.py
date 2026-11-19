@@ -3,6 +3,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from app.db import models  # noqa: F401  (registers tables on Base.metadata)
+from app.db.base import Base
 from app.settings import get_settings
 
 # this is the Alembic Config object, which provides
@@ -14,11 +16,9 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# add your model's MetaData object here
-# for 'autogenerate' support
-# from myapp import mymodel
-# target_metadata = mymodel.Base.metadata
-target_metadata = None
+# Importing the models above registers every table on Base.metadata for
+# 'autogenerate' support.
+target_metadata = Base.metadata
 
 
 def _database_url() -> str:
