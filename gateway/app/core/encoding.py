@@ -13,9 +13,9 @@ class EncodingService:
   def message_length(self, text: str, encoding: Encoding) -> int:
     if encoding is Encoding.GSM7:
       return sum(2 if c in GSM7_EXTENSION else 1 for c in text)
-    # Default back to utf-16-le, since thats what SMS usually uses.
-    # Not specified in the spec but I'm going with this
-    return len(text.encode("utf-16-le")) // 2
+    # UCS-2 is measured in UTF-16 code units: astral characters count as two,
+    # and a lone surrogate counts as one instead of raising on encode().
+    return sum(2 if ord(c) > 0xFFFF else 1 for c in text)
 
   def count_segments(self, text: str) -> tuple[Encoding, int]:
     if not text:
