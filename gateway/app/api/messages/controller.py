@@ -7,7 +7,8 @@ from app.db.database import get_session
 
 from .handler import MessagesHandler
 from .models import MessagesRequest, MessagesResponse, QuoteRequest, QuoteResponse
-
+from uuid import uuid7
+from app.db.models import MessageStatus, Encoding
 router = APIRouter()
 
 
@@ -18,10 +19,20 @@ async def receive_messages(
   api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> MessagesResponse | JSONResponse:
   handler = MessagesHandler(db)
-  if await handler.tenant_for_api_key(api_key or "") is None:
+
+  tenant = handler.tenant_for_api_key(api_key or "")
+  if tenant is None:
     return handler.error_response(401, "UNAUTHORIZED")
 
-  return MessagesResponse(message_id="6-7")
+  return MessagesResponse(
+    id=uuid7(),
+    status=MessageStatus.ACCEPTED,
+    client_ref=None,
+    encoding=Encoding.GSM7,
+    segments= 67,
+    total_price= 67,
+    currency="USD",
+  )
 
 
 @router.post("/quote", response_model=QuoteResponse)
