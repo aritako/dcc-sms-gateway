@@ -146,15 +146,15 @@ class Message(Base):
         ),
         UniqueConstraint("id", "tenant_id"),
         Index(
-            "idx_carrier_carrier_id",
+            "idx_messages_carrier_carrier_id",
             "carrier",
             "carrier_id",
             unique=True,
             postgresql_where=sa_text("carrier_id IS NOT NULL"),
         ),
-        Index("idx_tenant_id_created_at", "tenant_id", sa_text("created_at DESC")),
-        Index("idx_status_available_at", "status", "available_at"),
-        Index("idx_tenant_id_status", "tenant_id", "status"),
+        Index("idx_messages_tenant_id_created_at", "tenant_id", sa_text("created_at DESC")),
+        Index("idx_messages_status_available_at", "status", "available_at"),
+        Index("idx_messages_tenant_id_status", "tenant_id", "status"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
@@ -190,7 +190,7 @@ class MessageEvent(Base):
             name="ck_message_events_status_valid",
         ),
         UniqueConstraint("message_id", "status"),
-        Index("idx_message_id_id", "message_id", "id"),
+        Index("idx_message_events_message_id_id", "message_id", "id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)

@@ -184,16 +184,16 @@ def upgrade() -> None:
         sa.UniqueConstraint("id", "tenant_id", name="uq_messages_id_tenant_id"),
     )
     op.create_index(
-        "idx_tenant_id_created_at",
+        "idx_messages_tenant_id_created_at",
         "messages",
         ["tenant_id", sa.text("created_at DESC")],
     )
     op.create_index(
-        "idx_status_available_at", "messages", ["status", "available_at"]
+        "idx_messages_status_available_at", "messages", ["status", "available_at"]
     )
-    op.create_index("idx_tenant_id_status", "messages", ["tenant_id", "status"])
+    op.create_index("idx_messages_tenant_id_status", "messages", ["tenant_id", "status"])
     op.create_index(
-        "idx_carrier_carrier_id",
+        "idx_messages_carrier_carrier_id",
         "messages",
         ["carrier", "carrier_id"],
         unique=True,
@@ -228,7 +228,7 @@ def upgrade() -> None:
         ),
     )
     op.create_index(
-        "idx_message_id_id", "message_events", ["message_id", "id"]
+        "idx_message_events_message_id_id", "message_events", ["message_id", "id"]
     )
 
     op.create_table(

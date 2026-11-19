@@ -216,12 +216,12 @@ async def test_message_requires_an_existing_tenant() -> None:
 
 async def test_required_indexes_exist() -> None:
     expected = {
-        "idx_tenant_id_created_at",
-        "idx_status_available_at",
-        "idx_tenant_id_status",
-        "idx_message_id_id",
+        "idx_messages_tenant_id_created_at",
+        "idx_messages_status_available_at",
+        "idx_messages_tenant_id_status",
+        "idx_message_events_message_id_id",
         "idx_ledger_entries_tenant_id_created_at",
-        "idx_carrier_carrier_id",
+        "idx_messages_carrier_carrier_id",
     }
 
     async with get_engine().connect() as connection:
@@ -237,7 +237,7 @@ async def test_required_indexes_exist() -> None:
                 text(
                     "SELECT indexdef FROM pg_indexes "
                     "WHERE schemaname = 'public' "
-                    "AND indexname = 'idx_carrier_carrier_id'"
+                    "AND indexname = 'idx_messages_carrier_carrier_id'"
                 )
             )
         ).scalar_one()
