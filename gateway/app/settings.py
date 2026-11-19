@@ -9,7 +9,6 @@ class Settings(BaseSettings):
     """Runtime configuration, read from the environment (or a local .env)."""
 
     model_config = SettingsConfigDict(
-        # `cd gateway && uv run ...` finds both the service-local and repo-root .env.
         env_file=(".env", "../.env"),
         env_file_encoding="utf-8",
         extra="ignore",
@@ -44,5 +43,5 @@ def load_settings(**kwargs: Any) -> Settings:
 
 @lru_cache
 def get_settings() -> Settings:
-    """Return cached settings. Nothing connects here; callers do that lazily."""
+    """Return cached settings."""
     return load_settings()

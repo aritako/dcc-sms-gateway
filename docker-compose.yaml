@@ -41,6 +41,20 @@ services:
     environment: *gateway-env
     ports:
       - "8000:8000"
+    volumes:
+      - ./gateway/app:/app/app
+    command:
+      [
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--reload",
+        "--reload-dir",
+        "/app/app",
+      ]
     depends_on:
       postgres:
         condition: service_healthy
@@ -50,7 +64,18 @@ services:
   worker:
     build: ./gateway
     environment: *gateway-env
-    command: ["python", "-m", "app.worker.worker"]
+    volumes:
+      - ./gateway/app:/app/app
+    command:
+      [
+        "watchfiles",
+        "--filter",
+        "python",
+        "--ignore-paths",
+        "__pycache__",
+        "python -m app.worker.worker",
+        "app",
+      ]
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,8 +84,36 @@ services:
 
   carrier:
     build: ./carrier
+    environment:
+      GATEWAY_URL: http://api:8000
+      DLR_SECRET: dev-dlr-secret
     ports:
       - "8001:8001"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - ./carrier/app:/app/app
+    command:
+      [
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8001",
+        "--reload",
+        "--reload-dir",
+        "/app/app",
+      ]
 
 volumes:
   pgdata:
