@@ -191,7 +191,6 @@ def upgrade() -> None:
     op.create_index(
         "idx_status_available_at", "messages", ["status", "available_at"]
     )
-    op.create_index("idx_carrier_id", "messages", ["carrier_id"])
     op.create_index("idx_tenant_id_status", "messages", ["tenant_id", "status"])
     op.create_index(
         "idx_carrier_carrier_id",

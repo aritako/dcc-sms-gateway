@@ -154,7 +154,6 @@ class Message(Base):
         ),
         Index("idx_tenant_id_created_at", "tenant_id", sa_text("created_at DESC")),
         Index("idx_status_available_at", "status", "available_at"),
-        Index("idx_carrier_id", "carrier_id"),
         Index("idx_tenant_id_status", "tenant_id", "status"),
     )
 

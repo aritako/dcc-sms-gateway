@@ -218,7 +218,6 @@ async def test_required_indexes_exist() -> None:
     expected = {
         "idx_tenant_id_created_at",
         "idx_status_available_at",
-        "idx_carrier_id",
         "idx_tenant_id_status",
         "idx_message_id_id",
         "idx_ledger_entries_tenant_id_created_at",
