@@ -27,7 +27,10 @@ class MessagesHandler:
     )
 
   def admin_key_matches(self, admin_key: str) -> bool:
-    return secrets.compare_digest(admin_key, get_settings().admin_api_key)
+    # compare_digest raises TypeError on non-ASCII str; bytes compare is total.
+    return secrets.compare_digest(
+      admin_key.encode("utf-8"), get_settings().admin_api_key.encode("utf-8")
+    )
 
   async def tenant_by_id(self, tenant_id: UUID) -> Tenant | None:
     return await self.db.get(Tenant, tenant_id)
