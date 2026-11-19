@@ -26,6 +26,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="DCC SMS Gateway", lifespan=lifespan)
+v1_router = APIRouter(prefix="/v1", tags=["v1"])
 
 
 @app.get("/")
