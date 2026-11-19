@@ -33,9 +33,6 @@ class Settings(BaseSettings):
   w_undeliv: float = 0.07
   w_expired: float = 0.03
 
-  dedupe_message_id: bool = True
-
-  # Optional fixed seed, so fault injection can be reproduced.
   seed: int | None = Field(default=None, validation_alias="CARRIER_SEED")
 
 

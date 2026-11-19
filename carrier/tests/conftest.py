@@ -41,7 +41,6 @@ def sender(monkeypatch: pytest.MonkeyPatch) -> FakeSender:
     "p_timeout": 0.0,
     "p_early_dlr": 0.0,
     "hang_seconds": 0.05,
-    "dedupe_message_id": True,
     "rate_limit_submit_per_sec": 50,
     "seed": None,
   }.items():

@@ -1,9 +1,7 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 from typing import Literal
 
 class SubmitRequest(BaseModel):
-  model_config = ConfigDict(populate_by_name=True)
-
   message_id: str
   to: str
   from_: str = Field(alias="from")

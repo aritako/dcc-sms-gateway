@@ -46,8 +46,15 @@ def _draw_outcome() -> Outcome:
 
 def _accept(
   payload: SubmitRequest, sender: DeliveryReceiptSender
-) -> tuple[str, DeliveryReceiptPayload]:
-  """Register the message and build its receipt."""
+) -> tuple[str, DeliveryReceiptPayload | None]:
+  """Register the message and build its receipt.
+
+  Returns ``(carrier_id, None)`` when a concurrent submit already registered
+  this message_id, so only the winner books a DLR.
+  """
+  existing = store.accepted.get(payload.message_id)
+  if existing is not None:
+    return existing, None
   carrier_id = store.new_carrier_id()
   store.accepted[payload.message_id] = carrier_id
   return carrier_id, sender.create(carrier_id)
@@ -70,24 +77,25 @@ async def submit(request: Request, payload: SubmitRequest) -> SubmitResponse:
   sender = request.app.state.dlr_sender
 
   # A retry with the same message_id (e.g. after a timeout) gets the original id.
-  if settings.dedupe_message_id and payload.message_id in store.accepted:
+  if payload.message_id in store.accepted:
     return SubmitResponse(carrier_id=store.accepted[payload.message_id])
 
   await asyncio.sleep(random.uniform(settings.latency_min, settings.latency_max))
 
   outcome = _draw_outcome()
 
-  # 3% chance of happening
   if outcome is Outcome.TEMPORARY_FAILURE:
     store.counters["s503"] += 1
     return _error(503, "TEMPORARY_FAILURE")
-  # 1% chance of happening
   if outcome is Outcome.INVALID_DESTINATION:
     store.counters["s400"] += 1
     return _error(400, "INVALID_DESTINATION")
 
   # Accepted at this point.
   carrier_id, receipt = _accept(payload, sender)
+  if receipt is None:
+    # Another concurrent submit won the race; reuse its acceptance.
+    return SubmitResponse(carrier_id=carrier_id)
   await _book_dlr(sender, receipt)
 
   # Message already accepted, but carrier simulate timeout.

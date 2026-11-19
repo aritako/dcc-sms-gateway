@@ -34,16 +34,11 @@ class DeliveryReceiptSender:
       timestamp=datetime.now(UTC),
     )
 
-  def delay_seconds(self) -> float:
-    return random.uniform(self._settings.dlr_min_s, self._settings.dlr_max_s)
-
-
   async def send(self, payload: DeliveryReceiptPayload) -> None:
     try:
       await self._client.deliver(payload)
     except httpx.HTTPError:
       logger.warning("delivery receipt failed for carrier_id=%s", payload.carrier_id)
-
 
   async def send_after(self, payload: DeliveryReceiptPayload, delay: float) -> None:
     if delay > 0:
@@ -55,7 +50,8 @@ class DeliveryReceiptSender:
 
   def schedule(self, payload: DeliveryReceiptPayload, delay: float | None = None) -> None:
     # Either delay sending from 0.5s to 10s (default), or use the caller's override.
-    delay = delay if delay else random.uniform(self._settings.dlr_min_s, self._settings.dlr_max_s)
+    if delay is None:
+      delay = random.uniform(self._settings.dlr_min_s, self._settings.dlr_max_s)
     task = asyncio.create_task(
       self.send_after(payload, delay)
     )

@@ -53,11 +53,12 @@ async def count_submits(request: Request, call_next):
   return await call_next(request)
 
 
-@app.get("/")
-async def root():
-  return {"message": "Hello World"}
-
-
 @app.get("/healthz")
 async def healthz():
   return {"status": "ok"}
+
+
+@app.get("/stats")
+async def stats():
+  # Consumed by the load script (#20).
+  return store.snapshot()

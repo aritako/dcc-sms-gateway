@@ -7,8 +7,6 @@ from httpx import ASGITransport, AsyncClient
 from app import store
 from app.main import app
 from app.settings import get_settings
-from app.store import snapshot
-import logging
 
 def make_client() -> AsyncClient:
   return AsyncClient(transport=ASGITransport(app=app), base_url="http://carrier.test")
@@ -29,17 +27,15 @@ def submit_body(message_id: str = "m-1", **overrides: object) -> dict[str, objec
 async def test_accepts_and_emits_one_dlr(sender) -> None:
   async with make_client() as client:
     response = await client.post("/submit", json=submit_body())
+    stats = await client.get("/stats")
 
   assert response.status_code == 200
   payload = response.json()
   assert payload["carrier_id"].startswith("c-")
   assert [receipt.carrier_id for receipt in sender.scheduled] == [payload["carrier_id"]]
   assert sender.sent == []
-
-  stats = snapshot()
-
-  assert stats["accepted"] == 1
-  assert stats["per_message_submits"] == {"m-1": 1}
+  assert stats.json()["accepted"] == 1
+  assert stats.json()["per_message_submits"] == {"m-1": 1}
 
 
 @pytest.mark.parametrize(
@@ -116,6 +112,21 @@ async def test_a_retry_during_the_hang_gets_the_original_id(sender, monkeypatch)
   # The acceptance and its DLR are not repeated.
   assert len(sender.scheduled) == 1
   assert store.snapshot()["per_message_submits"] == {"m-1": 2}
+
+
+async def test_concurrent_duplicates_share_one_acceptance(sender, monkeypatch) -> None:
+  monkeypatch.setattr(get_settings(), "p_timeout", 1.0)
+  monkeypatch.setattr(get_settings(), "hang_seconds", 0.05)
+
+  async with make_client() as client:
+    first, second = await asyncio.gather(
+      client.post("/submit", json=submit_body()),
+      client.post("/submit", json=submit_body()),
+    )
+
+  assert first.status_code == second.status_code == 200
+  assert first.json()["carrier_id"] == second.json()["carrier_id"]
+  assert len(sender.scheduled) == 1
 
 
 async def test_early_dlr_is_sent_before_the_response(sender, monkeypatch) -> None:
