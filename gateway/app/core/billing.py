@@ -41,3 +41,7 @@ class BillingService:
     )
     await self.db.flush()
     return balance_after
+  
+  async def charge_many(self, tenant_id : uuid.UUID, list[tuple[uuid.UUID, int]]):
+    # Process a list of uuids + amount in cents e.g. [(ax23adx, 5), ... ]
+    pass
