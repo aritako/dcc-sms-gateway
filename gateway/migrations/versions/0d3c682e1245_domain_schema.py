@@ -110,6 +110,7 @@ def upgrade() -> None:
         sa.Column("to_number", sa.String(length=16), nullable=False),
         sa.Column("sender_id", sa.String(length=11), nullable=False),
         sa.Column("text", sa.Text(), nullable=False),
+        sa.Column("client_ref", sa.Text(), nullable=True),
         sa.Column("encoding", sa.String(length=4), nullable=False),
         sa.Column("segments", sa.Integer(), nullable=False),
         sa.Column("price_per_segment_cents", sa.BigInteger(), nullable=False),

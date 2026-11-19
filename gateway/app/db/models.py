@@ -162,6 +162,7 @@ class Message(Base):
     to_number: Mapped[str] = mapped_column(String(16))
     sender_id: Mapped[str] = mapped_column(String(11))
     text: Mapped[str] = mapped_column(Text)
+    client_ref: Mapped[str | None] = mapped_column(Text)
     encoding: Mapped[str] = mapped_column(String(4))
     segments: Mapped[int] = mapped_column(Integer)
     price_per_segment_cents: Mapped[int] = mapped_column(BigInteger)
