@@ -21,6 +21,8 @@ class EncodingService:
 
 
   def count_segments(self, text: str) -> tuple[Encoding, int]:
+    if not text:
+      raise ValueError("text must not be empty")
     encoding = self.detect_encoding(text)
     length = self.message_length(text, encoding)
     single, multi = SEGMENT_LIMITS[encoding]
