@@ -28,9 +28,7 @@ def load_settings(**kwargs: Any) -> Settings:
     return Settings(**kwargs)
   except ValidationError as exc:
     missing = sorted(
-      str(error["loc"][0]).upper()
-      for error in exc.errors()
-      if error["type"] == "missing"
+      str(error["loc"][0]).upper() for error in exc.errors() if error["type"] == "missing"
     )
     if missing:
       raise RuntimeError(

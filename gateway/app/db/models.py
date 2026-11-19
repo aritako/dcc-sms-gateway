@@ -67,9 +67,7 @@ class Tenant(Base):
   opening_balance_cents: Mapped[int] = mapped_column(BigInteger)
   balance_cents: Mapped[int] = mapped_column(BigInteger)
   currency: Mapped[str] = mapped_column(String(3), server_default=sa_text("'USD'"))
-  created_at: Mapped[datetime] = mapped_column(
-    DateTime(timezone=True), server_default=func.now()
-  )
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
   updated_at: Mapped[datetime] = mapped_column(
     DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
   )
@@ -87,9 +85,7 @@ class ApiKey(Base):
   id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
   tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
   key_hash: Mapped[str] = mapped_column(String(64), unique=True)
-  created_at: Mapped[datetime] = mapped_column(
-    DateTime(timezone=True), server_default=func.now()
-  )
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Price(Base):
@@ -105,9 +101,7 @@ class Price(Base):
   id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
   prefix: Mapped[str] = mapped_column(String(16), unique=True)
   price_per_segment_cents: Mapped[int] = mapped_column(BigInteger)
-  created_at: Mapped[datetime] = mapped_column(
-    DateTime(timezone=True), server_default=func.now()
-  )
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
   updated_at: Mapped[datetime] = mapped_column(
     DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
   )
@@ -172,12 +166,8 @@ class Message(Base):
   )
   carrier: Mapped[str] = mapped_column(String(64), server_default=sa_text("'default'"))
   carrier_id: Mapped[str | None] = mapped_column(Text)
-  available_at: Mapped[datetime] = mapped_column(
-    DateTime(timezone=True), server_default=func.now()
-  )
-  created_at: Mapped[datetime] = mapped_column(
-    DateTime(timezone=True), server_default=func.now()
-  )
+  available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
   updated_at: Mapped[datetime] = mapped_column(
     DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
   )
@@ -197,9 +187,7 @@ class MessageEvent(Base):
   id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
   message_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"))
   status: Mapped[str] = mapped_column(String(16))
-  created_at: Mapped[datetime] = mapped_column(
-    DateTime(timezone=True), server_default=func.now()
-  )
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class LedgerEntry(Base):
@@ -236,6 +224,4 @@ class LedgerEntry(Base):
   kind: Mapped[str] = mapped_column(String(8))
   amount_cents: Mapped[int] = mapped_column(BigInteger)
   balance_after_cents: Mapped[int] = mapped_column(BigInteger)
-  created_at: Mapped[datetime] = mapped_column(
-    DateTime(timezone=True), server_default=func.now()
-  )
+  created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

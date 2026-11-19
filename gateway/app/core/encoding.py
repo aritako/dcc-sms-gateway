@@ -5,12 +5,10 @@ from app.db.models import Encoding
 
 
 class EncodingService:
-  
   def detect_encoding(self, text: str) -> Encoding:
     if all(c in GSM7_BASIC or c in GSM7_EXTENSION for c in text):
       return Encoding.GSM7
     return Encoding.UCS2
-
 
   def message_length(self, text: str, encoding: Encoding) -> int:
     if encoding is Encoding.GSM7:
@@ -18,7 +16,6 @@ class EncodingService:
     # Default back to utf-16-le, since thats what SMS usually uses.
     # Not specified in the spec but I'm going with this
     return len(text.encode("utf-16-le")) // 2
-
 
   def count_segments(self, text: str) -> tuple[Encoding, int]:
     if not text:

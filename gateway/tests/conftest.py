@@ -44,9 +44,7 @@ def _ensure_test_database() -> None:
       "SELECT 1 FROM pg_database WHERE datname = %s", (url.database,)
     ).fetchone()
     if exists is None:
-      connection.execute(
-        sql.SQL("CREATE DATABASE {}").format(sql.Identifier(url.database))
-      )
+      connection.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(url.database)))
 
 
 @pytest.fixture(scope="session")
@@ -120,7 +118,5 @@ def fake_carrier() -> FakeCarrier:
 async def fake_carrier_client(fake_carrier: FakeCarrier) -> AsyncIterator[AsyncClient]:
   """httpx client wired to FakeCarrier instead of the network."""
   transport = httpx.MockTransport(fake_carrier.handler)
-  async with httpx.AsyncClient(
-    transport=transport, base_url=get_settings().carrier_url
-  ) as client:
+  async with httpx.AsyncClient(transport=transport, base_url=get_settings().carrier_url) as client:
     yield client

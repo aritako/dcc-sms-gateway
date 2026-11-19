@@ -99,9 +99,7 @@ async def test_encoding_values_are_the_carrier_wire_enum(
   assert response.json()["encoding"] == Encoding.GSM7.value
 
 
-async def test_multiple_segments_multiply_the_price(
-  client: AsyncClient, tenant: Tenant
-) -> None:
+async def test_multiple_segments_multiply_the_price(client: AsyncClient, tenant: Tenant) -> None:
   response = await _quote(client, text="a" * 161)
 
   assert response.json()["segments"] == 2
@@ -135,12 +133,8 @@ async def test_currency_comes_from_the_tenant(
   assert response.json()["currency"] == "EUR"
 
 
-async def test_admin_key_quotes_for_the_named_tenant(
-  client: AsyncClient, tenant: Tenant
-) -> None:
-  response = await _quote(
-    client, headers={"x-admin-key": ADMIN_KEY}, tenant_id=str(tenant.id)
-  )
+async def test_admin_key_quotes_for_the_named_tenant(client: AsyncClient, tenant: Tenant) -> None:
+  response = await _quote(client, headers={"x-admin-key": ADMIN_KEY}, tenant_id=str(tenant.id))
 
   assert response.status_code == 200
   assert response.json()["currency"] == "USD"
@@ -169,9 +163,7 @@ async def test_wrong_admin_key_is_unauthorized(client: AsyncClient, tenant: Tena
   assert response.status_code == 401
 
 
-async def test_missing_credentials_are_unauthorized(
-  client: AsyncClient, tenant: Tenant
-) -> None:
+async def test_missing_credentials_are_unauthorized(client: AsyncClient, tenant: Tenant) -> None:
   response = await _quote(client, headers={})
 
   assert response.status_code == 401
@@ -184,9 +176,7 @@ async def test_unknown_api_key_is_unauthorized(client: AsyncClient, tenant: Tena
   assert response.status_code == 401
 
 
-async def test_unknown_destination_is_unsupported(
-  client: AsyncClient, tenant: Tenant
-) -> None:
+async def test_unknown_destination_is_unsupported(client: AsyncClient, tenant: Tenant) -> None:
   response = await _quote(client, to="+33123456789")
 
   assert response.status_code == 422
@@ -199,9 +189,7 @@ async def test_empty_text_is_rejected(client: AsyncClient, tenant: Tenant) -> No
   assert response.status_code == 422
 
 
-async def test_malformed_destination_is_rejected(
-  client: AsyncClient, tenant: Tenant
-) -> None:
+async def test_malformed_destination_is_rejected(client: AsyncClient, tenant: Tenant) -> None:
   response = await _quote(client, to="08801712345678")
 
   assert response.status_code == 422
@@ -214,7 +202,5 @@ async def test_quote_writes_nothing(
 
   for model in (Message, MessageEvent, LedgerEntry):
     assert await session.scalar(select(func.count()).select_from(model)) == 0
-  balance = await session.scalar(
-    select(Tenant.balance_cents).where(Tenant.id == tenant.id)
-  )
+  balance = await session.scalar(select(Tenant.balance_cents).where(Tenant.id == tenant.id))
   assert balance == 10_000

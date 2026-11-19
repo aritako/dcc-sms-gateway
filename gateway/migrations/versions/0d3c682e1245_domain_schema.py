@@ -5,6 +5,7 @@ Revises: 51282902a726
 Create Date: 2026-11-19 01:23:29.901080
 
 """
+
 from typing import Sequence, Union
 
 from alembic import op
@@ -12,8 +13,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '0d3c682e1245'
-down_revision: Union[str, Sequence[str], None] = '51282902a726'
+revision: str = "0d3c682e1245"
+down_revision: Union[str, Sequence[str], None] = "51282902a726"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -65,9 +66,7 @@ def upgrade() -> None:
       server_default=sa.text("now()"),
       nullable=False,
     ),
-    sa.CheckConstraint(
-      "key_hash ~ '^[0-9a-f]{64}$'", name="ck_api_keys_key_hash_sha256_hex"
-    ),
+    sa.CheckConstraint("key_hash ~ '^[0-9a-f]{64}$'", name="ck_api_keys_key_hash_sha256_hex"),
     sa.ForeignKeyConstraint(
       ["tenant_id"],
       ["tenants.id"],
@@ -96,9 +95,7 @@ def upgrade() -> None:
       nullable=False,
     ),
     sa.CheckConstraint("prefix ~ '^\\+[1-9][0-9]{0,14}$'", name="ck_prices_prefix_e164"),
-    sa.CheckConstraint(
-      "price_per_segment_cents > 0", name="ck_prices_price_positive"
-    ),
+    sa.CheckConstraint("price_per_segment_cents > 0", name="ck_prices_price_positive"),
     sa.PrimaryKeyConstraint("id", name="pk_prices"),
     sa.UniqueConstraint("prefix", name="uq_prices_prefix"),
   )
@@ -146,16 +143,12 @@ def upgrade() -> None:
       server_default=sa.text("now()"),
       nullable=False,
     ),
-    sa.CheckConstraint(
-      "to_number ~ '^\\+[1-9][0-9]{1,14}$'", name="ck_messages_to_number_e164"
-    ),
+    sa.CheckConstraint("to_number ~ '^\\+[1-9][0-9]{1,14}$'", name="ck_messages_to_number_e164"),
     sa.CheckConstraint(
       "sender_id ~ '^[A-Za-z0-9]{1,11}$'", name="ck_messages_sender_id_alphanumeric"
     ),
     sa.CheckConstraint("char_length(text) > 0", name="ck_messages_text_not_empty"),
-    sa.CheckConstraint(
-      "encoding IN ('GSM7', 'UCS2')", name="ck_messages_encoding_valid"
-    ),
+    sa.CheckConstraint("encoding IN ('GSM7', 'UCS2')", name="ck_messages_encoding_valid"),
     sa.CheckConstraint("segments >= 1", name="ck_messages_segments_positive"),
     sa.CheckConstraint(
       "price_per_segment_cents >= 0",
@@ -189,9 +182,7 @@ def upgrade() -> None:
     "messages",
     ["tenant_id", sa.text("created_at DESC")],
   )
-  op.create_index(
-    "idx_messages_status_available_at", "messages", ["status", "available_at"]
-  )
+  op.create_index("idx_messages_status_available_at", "messages", ["status", "available_at"])
   op.create_index("idx_messages_tenant_id_status", "messages", ["tenant_id", "status"])
   op.create_index(
     "idx_messages_carrier_carrier_id",
@@ -224,13 +215,9 @@ def upgrade() -> None:
       ondelete="CASCADE",
     ),
     sa.PrimaryKeyConstraint("id", name="pk_message_events"),
-    sa.UniqueConstraint(
-      "message_id", "status", name="uq_message_events_message_id_status"
-    ),
+    sa.UniqueConstraint("message_id", "status", name="uq_message_events_message_id_status"),
   )
-  op.create_index(
-    "idx_message_events_message_id_id", "message_events", ["message_id", "id"]
-  )
+  op.create_index("idx_message_events_message_id_id", "message_events", ["message_id", "id"])
 
   op.create_table(
     "ledger_entries",
@@ -249,9 +236,7 @@ def upgrade() -> None:
     sa.CheckConstraint(
       "kind IN ('CHARGE', 'REFUND', 'CREDIT')", name="ck_ledger_entries_kind_valid"
     ),
-    sa.CheckConstraint(
-      "amount_cents <> 0", name="ck_ledger_entries_amount_non_zero"
-    ),
+    sa.CheckConstraint("amount_cents <> 0", name="ck_ledger_entries_amount_non_zero"),
     sa.CheckConstraint(
       "balance_after_cents >= 0",
       name="ck_ledger_entries_balance_after_non_negative",
@@ -275,9 +260,7 @@ def upgrade() -> None:
       ["tenant_id"], ["tenants.id"], name="fk_ledger_entries_tenant_id_tenants"
     ),
     sa.PrimaryKeyConstraint("id", name="pk_ledger_entries"),
-    sa.UniqueConstraint(
-      "message_id", "kind", name="uq_ledger_entries_message_id_kind"
-    ),
+    sa.UniqueConstraint("message_id", "kind", name="uq_ledger_entries_message_id_kind"),
   )
   op.create_index(
     "idx_ledger_entries_tenant_id_created_at",

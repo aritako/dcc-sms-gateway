@@ -44,9 +44,7 @@ async def _insert_message(tenant_id: uuid.UUID, **overrides: object) -> uuid.UUI
 async def _insert_event(message_id: uuid.UUID, status: str = "ACCEPTED") -> uuid.UUID:
   async with get_engine().begin() as connection:
     result = await connection.execute(
-      insert(MessageEvent)
-      .values(message_id=message_id, status=status)
-      .returning(MessageEvent.id)
+      insert(MessageEvent).values(message_id=message_id, status=status).returning(MessageEvent.id)
     )
     return result.scalar_one()
 
@@ -79,9 +77,7 @@ async def test_negative_balance_is_rejected() -> None:
   with pytest.raises(IntegrityError):
     async with get_engine().begin() as connection:
       await connection.execute(
-        update(Tenant)
-        .where(Tenant.id == tenant_id)
-        .values(balance_cents=-1)
+        update(Tenant).where(Tenant.id == tenant_id).values(balance_cents=-1)
       )
 
 
@@ -106,9 +102,7 @@ async def test_duplicate_api_key_hash_is_rejected() -> None:
 
   with pytest.raises(IntegrityError):
     async with get_engine().begin() as connection:
-      await connection.execute(
-        insert(ApiKey).values(tenant_id=tenant_id, key_hash=key_hash)
-      )
+      await connection.execute(insert(ApiKey).values(tenant_id=tenant_id, key_hash=key_hash))
 
 
 async def test_duplicate_charge_and_refund_are_rejected() -> None:
@@ -260,15 +254,9 @@ async def test_seed_is_idempotent_and_the_ledger_explains_the_balance() -> None:
         )
       ).all()
     }
-    key_hashes = set(
-      (await connection.execute(select(ApiKey.key_hash))).scalars()
-    )
+    key_hashes = set((await connection.execute(select(ApiKey.key_hash))).scalars())
     prices = dict(
-      (
-        await connection.execute(
-          select(Price.prefix, Price.price_per_segment_cents)
-        )
-      ).all()
+      (await connection.execute(select(Price.prefix, Price.price_per_segment_cents))).all()
     )
 
   assert tenants == {
@@ -292,9 +280,7 @@ async def test_seed_is_idempotent_and_the_ledger_explains_the_balance() -> None:
       (await connection.execute(select(func.count()).select_from(Price))).scalar_one(),
     )
     acme_balance = (
-      await connection.execute(
-        select(Tenant.balance_cents).where(Tenant.name == "Acme Bank")
-      )
+      await connection.execute(select(Tenant.balance_cents).where(Tenant.name == "Acme Bank"))
     ).scalar_one()
 
   assert counts == (2, 2, 2)
@@ -304,14 +290,10 @@ async def test_seed_is_idempotent_and_the_ledger_explains_the_balance() -> None:
   async with get_engine().begin() as connection:
     tenant_id, opening = (
       await connection.execute(
-        select(Tenant.id, Tenant.opening_balance_cents).where(
-          Tenant.name == "ShopFast"
-        )
+        select(Tenant.id, Tenant.opening_balance_cents).where(Tenant.name == "ShopFast")
       )
     ).one()
-    message_id = await _insert_message(
-      tenant_id, sender_id="SHOPFAST", text="Weekend sale"
-    )
+    message_id = await _insert_message(tenant_id, sender_id="SHOPFAST", text="Weekend sale")
     await connection.execute(
       insert(LedgerEntry).values(
         tenant_id=tenant_id,
@@ -339,9 +321,7 @@ async def test_seed_is_idempotent_and_the_ledger_explains_the_balance() -> None:
 
   async with get_engine().connect() as connection:
     balance = (
-      await connection.execute(
-        select(Tenant.balance_cents).where(Tenant.id == tenant_id)
-      )
+      await connection.execute(select(Tenant.balance_cents).where(Tenant.id == tenant_id))
     ).scalar_one()
     ledger_sum = (
       await connection.execute(

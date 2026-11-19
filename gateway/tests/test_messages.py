@@ -44,9 +44,7 @@ async def test_unknown_key_is_unauthorized(client: AsyncClient, tenant_with_key:
 
 
 async def test_valid_key_is_accepted(client: AsyncClient, tenant_with_key: Tenant) -> None:
-  response = await client.post(
-    "/v1/messages", json=MESSAGE, headers={"X-API-Key": PLAINTEXT_KEY}
-  )
+  response = await client.post("/v1/messages", json=MESSAGE, headers={"X-API-Key": PLAINTEXT_KEY})
 
   assert response.status_code == 200
   assert response.json()["message_id"]
