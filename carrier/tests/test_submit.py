@@ -33,7 +33,6 @@ async def test_accepts_and_emits_one_dlr(sender) -> None:
   assert response.status_code == 200
   payload = response.json()
   assert payload["carrier_id"].startswith("c-")
-  assert payload["duplicate"] is False
   assert [receipt.carrier_id for receipt in sender.scheduled] == [payload["carrier_id"]]
   assert sender.sent == []
 
@@ -82,7 +81,6 @@ async def test_duplicate_message_id_returns_original_id(sender) -> None:
   assert first.status_code == 200
   assert second.status_code == 200
   assert second.json()["carrier_id"] == first.json()["carrier_id"]
-  assert second.json()["duplicate"] is True
   # Only the first submit schedules a receipt.
   assert len(sender.scheduled) == 1
 
@@ -114,7 +112,7 @@ async def test_a_retry_during_the_hang_gets_the_original_id(sender, monkeypatch)
     delayed = await first
 
   assert retry.status_code == 200
-  assert retry.json() == {"carrier_id": delayed.json()["carrier_id"], "duplicate": True}
+  assert retry.json() == {"carrier_id": delayed.json()["carrier_id"]}
   # The acceptance and its DLR are not repeated.
   assert len(sender.scheduled) == 1
   assert store.snapshot()["per_message_submits"] == {"m-1": 2}

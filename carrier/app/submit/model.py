@@ -12,4 +12,3 @@ class SubmitRequest(BaseModel):
 
 class SubmitResponse(BaseModel):
   carrier_id: str
-  duplicate: bool = False

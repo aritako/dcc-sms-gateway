@@ -69,12 +69,9 @@ async def submit(request: Request, payload: SubmitRequest) -> SubmitResponse:
   store.note_message(payload.message_id)
   sender = request.app.state.dlr_sender
 
-  # A retry with the same message_id is the gateway recovering from an
-  # ambiguous timeout; it gets the original id and no second delivery.
+  # A retry with the same message_id (e.g. after a timeout) gets the original id.
   if settings.dedupe_message_id and payload.message_id in store.accepted:
-    return SubmitResponse(
-      carrier_id=store.accepted[payload.message_id], duplicate=True
-    )
+    return SubmitResponse(carrier_id=store.accepted[payload.message_id])
 
   await asyncio.sleep(random.uniform(settings.latency_min, settings.latency_max))
 
@@ -89,8 +86,7 @@ async def submit(request: Request, payload: SubmitRequest) -> SubmitResponse:
     store.counters["s400"] += 1
     return _error(400, "INVALID_DESTINATION")
 
-  # Accepted. Commit both side effects before any delay, so a client that
-  # hangs up mid-response cannot lose the delivery.
+  # Accepted at this point.
   carrier_id, receipt = _accept(payload, sender)
   await _book_dlr(sender, receipt)
 
