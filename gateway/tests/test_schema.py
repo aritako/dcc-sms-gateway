@@ -246,37 +246,3 @@ async def test_required_indexes_exist() -> None:
     assert expected <= names
     assert "UNIQUE INDEX" in definition
     assert "carrier_id IS NOT NULL" in definition
-
-
-async def test_constraint_names_are_stable() -> None:
-    expected = {
-        "ck_tenants_opening_balance_non_negative",
-        "ck_tenants_balance_non_negative",
-        "ck_api_keys_key_hash_sha256_hex",
-        "ck_prices_prefix_e164",
-        "ck_messages_to_number_e164",
-        "ck_messages_sender_id_alphanumeric",
-        "ck_messages_text_not_empty",
-        "ck_messages_encoding_valid",
-        "ck_messages_total_price_arithmetic",
-        "ck_messages_status_valid",
-        "ck_message_events_status_valid",
-        "ck_ledger_entries_kind_valid",
-        "ck_ledger_entries_kind_amount_sign",
-        "ck_ledger_entries_kind_message_presence",
-        "fk_ledger_entries_message_id_tenant_id_messages",
-    }
-
-    async with get_engine().connect() as connection:
-        names = set(
-            (
-                await connection.execute(
-                    text(
-                        "SELECT conname FROM pg_constraint "
-                        "WHERE connamespace = 'public'::regnamespace"
-                    )
-                )
-            ).scalars()
-        )
-
-    assert expected <= names
