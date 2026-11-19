@@ -8,7 +8,7 @@ from app.api.messages.models import MessagesRequest
 from app.core.billing import BillingService
 from app.core.encoding import EncodingService
 from app.core.quote import Quote, QuoteService
-from app.db.models import Message, MessageEvent, MessageStatus, Tenant
+from app.db.models import IdempotencyKey, Message, MessageEvent, MessageStatus, Tenant
 from app.settings import get_settings
 
 
@@ -58,6 +58,11 @@ class MessagesHandler:
       tenant_id=tenant.id, message_id=message.id, amount_cents=quote.total_price_cents
     )
     return message, quote
+
+  def replay(self, stored: IdempotencyKey, fingerprint: str) -> JSONResponse:
+    if stored.request_hash != fingerprint:
+      return self.error_response(409, "IDEMPOTENCY_KEY_REUSED")
+    return JSONResponse(status_code=stored.response_status, content=stored.response_body)
 
   def error_response(self, status_code: int, code: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"error": code})

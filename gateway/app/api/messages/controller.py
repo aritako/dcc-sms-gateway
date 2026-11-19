@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import tenant_for_api_key
 from app.core.billing import InsufficientBalance
+from app.core.idempotency import IdempotencyService
 from app.core.quote import UnknownDestination
 from app.db.database import get_session
 
@@ -16,14 +18,29 @@ router = APIRouter()
 @router.post("", response_model=MessagesResponse, status_code=202)
 async def receive_messages(
   payload: MessagesRequest,
+  request: Request,
   db: AsyncSession = Depends(get_session),
   api_key: str | None = Header(default=None, alias="X-API-Key"),
+  idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=255),
 ) -> MessagesResponse | JSONResponse:
   handler = MessagesHandler(db)
 
   tenant = await tenant_for_api_key(db, api_key or "")
   if tenant is None:
     return handler.error_response(401, "UNAUTHORIZED")
+  tenant_id = tenant.id
+
+  idempotency = IdempotencyService(db)
+  key = idempotency_key or None
+  fingerprint = (
+    idempotency.request_hash(request.method, request.url.path, payload.model_dump(by_alias=True))
+    if key is not None
+    else None
+  )
+  if key is not None and fingerprint is not None:
+    stored = await idempotency.find(tenant_id, key)
+    if stored is not None:
+      return handler.replay(stored, fingerprint)
 
   try:
     message, quote = await handler.accept_message(tenant, payload)
@@ -34,9 +51,7 @@ async def receive_messages(
     await db.rollback()
     return handler.error_response(402, "INSUFFICIENT_BALANCE")
 
-  await db.commit()
-
-  return MessagesResponse(
+  response = MessagesResponse(
     id=message.id,
     status=message.status,
     client_ref=message.client_ref,
@@ -46,6 +61,27 @@ async def receive_messages(
     total_price=quote.total_price_cents,
     currency=quote.currency,
   )
+
+  if key is not None and fingerprint is not None:
+    try:
+      await idempotency.store(
+        tenant_id=tenant_id,
+        key=key,
+        request_hash=fingerprint,
+        status_code=202,
+        body=response.model_dump(mode="json"),
+      )
+    except IntegrityError:
+      # Another request with this (tenant, key) committed first. Its row is the
+      # winner: drop our message and charge, then replay the stored response.
+      await db.rollback()
+      stored = await idempotency.find(tenant_id, key)
+      if stored is None:
+        raise
+      return handler.replay(stored, fingerprint)
+
+  await db.commit()
+  return response
 
 
 @router.post("/quote", response_model=QuoteResponse)
