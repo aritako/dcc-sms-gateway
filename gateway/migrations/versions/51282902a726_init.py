@@ -19,10 +19,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    """Upgrade schema."""
-    pass
+  """Upgrade schema."""
+  pass
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
-    pass
+  """Downgrade schema."""
+  pass
