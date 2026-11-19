@@ -30,23 +30,23 @@ async def receive_messages(
   if tenant is None:
     return handler.error_response(401, "UNAUTHORIZED")
 
-  idempotency = IdempotencyService(db)
+  idempotencyService = IdempotencyService(db)
   fingerprint: str | None = None
   if idempotency_key is not None:
-    fingerprint = idempotency.request_hash(
+    fingerprint = idempotencyService.request_hash(
       request.method, request.url.path, payload.model_dump(by_alias=True)
     )
-    stored = await idempotency.claim(tenant.id, idempotency_key, fingerprint)
+    stored = await idempotencyService.claim(tenant.id, idempotency_key, fingerprint)
     if stored is not None:
-      return handler.replay(stored, fingerprint)
+      return idempotencyService.replay(stored, fingerprint)
 
   try:
     message, quote = await handler.accept_message(tenant, payload)
   except UnknownDestination:
-    await db.rollback()  # drops the reservation: rejections are never stored
+    await db.rollback()
     return handler.error_response(422, "UNSUPPORTED_DESTINATION")
   except InsufficientBalance:
-    await db.rollback()  # drops the reservation, so a retry can succeed after top-up
+    await db.rollback()
     return handler.error_response(402, "INSUFFICIENT_BALANCE")
 
   response = MessagesResponse(
@@ -61,7 +61,7 @@ async def receive_messages(
   )
 
   if idempotency_key is not None:
-    await idempotency.complete(
+    await idempotencyService.complete(
       tenant.id, idempotency_key, 202, response.model_dump(mode="json")
     )
 

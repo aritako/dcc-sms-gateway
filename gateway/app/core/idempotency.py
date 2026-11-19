@@ -3,6 +3,7 @@ import json
 import uuid
 from typing import Any
 
+from fastapi.responses import JSONResponse
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,7 +12,7 @@ from app.db.models import IdempotencyKey
 
 
 class IdempotencyService:
-  """Reserve and complete one response per (tenant, Idempotency-Key).
+  """Reserve, replay and complete one response per (tenant, Idempotency-Key).
 
   The reservation is the first write of a send: concurrent duplicates block on
   the primary key until the winner commits, then replay it. Only 2xx responses
@@ -35,6 +36,13 @@ class IdempotencyService:
         IdempotencyKey.key == key,
       )
     )
+
+  def replay(self, stored: IdempotencyKey, fingerprint: str) -> JSONResponse:
+    if stored.request_hash != fingerprint:
+      return JSONResponse(status_code=409, content={"error": "IDEMPOTENCY_KEY_REUSED"})
+    # complete() shares the winner's transaction, so a committed row is complete.
+    assert stored.response_status is not None and stored.response_body is not None
+    return JSONResponse(status_code=stored.response_status, content=stored.response_body)
 
   async def claim(
     self, tenant_id: uuid.UUID, key: str, request_hash: str
