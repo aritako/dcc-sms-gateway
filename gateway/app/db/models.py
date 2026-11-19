@@ -230,20 +230,27 @@ class LedgerEntry(Base):
 
 
 class IdempotencyKey(Base):
-  """A stored 2xx response, keyed per tenant by the client's Idempotency-Key.
+  """A reserved key and, once accepted, its 2xx response snapshot.
 
-  The composite primary key is the ticket's UNIQUE (tenant_id, key): concurrent
-  duplicates collide on insert, so exactly one transaction commits the message
-  and charge while the losers replay the winner's row.
+  The composite primary key is the ticket's UNIQUE (tenant_id, key): a
+  duplicate blocks on the insert before doing any work, so exactly one
+  transaction commits the message and charge while the losers replay it.
   """
 
   __tablename__ = "idempotency_keys"
+  __table_args__ = (
+    CheckConstraint(
+      "(response_status IS NULL) = (response_body IS NULL)",
+      name="ck_idempotency_keys_response_complete",
+    ),
+  )
 
   tenant_id: Mapped[uuid.UUID] = mapped_column(
     ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
   )
   key: Mapped[str] = mapped_column(Text, primary_key=True)
   request_hash: Mapped[str] = mapped_column(String(64))
-  response_status: Mapped[int] = mapped_column(Integer)
-  response_body: Mapped[dict[str, Any]] = mapped_column(JSONB)
+  # Reserved rows have neither; completed rows have both.
+  response_status: Mapped[int | None] = mapped_column(Integer)
+  response_body: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

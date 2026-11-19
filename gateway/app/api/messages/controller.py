@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import tenant_for_api_key
@@ -21,34 +20,33 @@ async def receive_messages(
   request: Request,
   db: AsyncSession = Depends(get_session),
   api_key: str | None = Header(default=None, alias="X-API-Key"),
-  idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", max_length=255),
+  idempotency_key: str | None = Header(
+    default=None, alias="Idempotency-Key", min_length=1, max_length=255
+  ),
 ) -> MessagesResponse | JSONResponse:
   handler = MessagesHandler(db)
 
   tenant = await tenant_for_api_key(db, api_key or "")
   if tenant is None:
     return handler.error_response(401, "UNAUTHORIZED")
-  tenant_id = tenant.id
 
   idempotency = IdempotencyService(db)
-  key = idempotency_key or None
-  fingerprint = (
-    idempotency.request_hash(request.method, request.url.path, payload.model_dump(by_alias=True))
-    if key is not None
-    else None
-  )
-  if key is not None and fingerprint is not None:
-    stored = await idempotency.find(tenant_id, key)
+  fingerprint: str | None = None
+  if idempotency_key is not None:
+    fingerprint = idempotency.request_hash(
+      request.method, request.url.path, payload.model_dump(by_alias=True)
+    )
+    stored = await idempotency.claim(tenant.id, idempotency_key, fingerprint)
     if stored is not None:
       return handler.replay(stored, fingerprint)
 
   try:
     message, quote = await handler.accept_message(tenant, payload)
   except UnknownDestination:
-    await db.rollback()
+    await db.rollback()  # drops the reservation: rejections are never stored
     return handler.error_response(422, "UNSUPPORTED_DESTINATION")
   except InsufficientBalance:
-    await db.rollback()
+    await db.rollback()  # drops the reservation, so a retry can succeed after top-up
     return handler.error_response(402, "INSUFFICIENT_BALANCE")
 
   response = MessagesResponse(
@@ -62,23 +60,10 @@ async def receive_messages(
     currency=quote.currency,
   )
 
-  if key is not None and fingerprint is not None:
-    try:
-      await idempotency.store(
-        tenant_id=tenant_id,
-        key=key,
-        request_hash=fingerprint,
-        status_code=202,
-        body=response.model_dump(mode="json"),
-      )
-    except IntegrityError:
-      # Another request with this (tenant, key) committed first. Its row is the
-      # winner: drop our message and charge, then replay the stored response.
-      await db.rollback()
-      stored = await idempotency.find(tenant_id, key)
-      if stored is None:
-        raise
-      return handler.replay(stored, fingerprint)
+  if idempotency_key is not None:
+    await idempotency.complete(
+      tenant.id, idempotency_key, 202, response.model_dump(mode="json")
+    )
 
   await db.commit()
   return response

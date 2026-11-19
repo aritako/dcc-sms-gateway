@@ -27,13 +27,17 @@ def upgrade() -> None:
     sa.Column("tenant_id", sa.Uuid(), nullable=False),
     sa.Column("key", sa.Text(), nullable=False),
     sa.Column("request_hash", sa.String(length=64), nullable=False),
-    sa.Column("response_status", sa.Integer(), nullable=False),
-    sa.Column("response_body", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column("response_status", sa.Integer(), nullable=True),
+    sa.Column("response_body", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     sa.Column(
       "created_at",
       sa.DateTime(timezone=True),
       server_default=sa.text("now()"),
       nullable=False,
+    ),
+    sa.CheckConstraint(
+      "(response_status IS NULL) = (response_body IS NULL)",
+      name="ck_idempotency_keys_response_complete",
     ),
     sa.ForeignKeyConstraint(
       ["tenant_id"],

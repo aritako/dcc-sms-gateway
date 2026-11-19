@@ -62,6 +62,8 @@ class MessagesHandler:
   def replay(self, stored: IdempotencyKey, fingerprint: str) -> JSONResponse:
     if stored.request_hash != fingerprint:
       return self.error_response(409, "IDEMPOTENCY_KEY_REUSED")
+    # complete() shares the winner's transaction, so a committed row is complete.
+    assert stored.response_status is not None and stored.response_body is not None
     return JSONResponse(status_code=stored.response_status, content=stored.response_body)
 
   def error_response(self, status_code: int, code: str) -> JSONResponse:
