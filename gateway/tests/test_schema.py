@@ -1,12 +1,13 @@
 import uuid
 
 import pytest
-from sqlalchemy import insert, text, update
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from app.db.database import get_engine
-from app.db.models import ApiKey, LedgerEntry, Message, MessageEvent, Tenant
+from app.db.models import ApiKey, LedgerEntry, Message, MessageEvent, Price, Tenant
 from app.security import hash_api_key
+from app.seed import DEMO_PRICES, DEMO_TENANTS, seed
 
 
 async def _insert_tenant(name: str = "Test Tenant", balance: int = 1000) -> uuid.UUID:
@@ -245,3 +246,119 @@ async def test_required_indexes_exist() -> None:
     assert expected <= names
     assert "UNIQUE INDEX" in definition
     assert "carrier_id IS NOT NULL" in definition
+
+
+async def test_seed_is_idempotent_and_the_ledger_explains_the_balance() -> None:
+    await seed()
+
+    async with get_engine().connect() as connection:
+        tenants = {
+            name: (opening, balance)
+            for name, opening, balance in (
+                await connection.execute(
+                    select(Tenant.name, Tenant.opening_balance_cents, Tenant.balance_cents)
+                )
+            ).all()
+        }
+        key_hashes = set(
+            (await connection.execute(select(ApiKey.key_hash))).scalars()
+        )
+        prices = dict(
+            (
+                await connection.execute(
+                    select(Price.prefix, Price.price_per_segment_cents)
+                )
+            ).all()
+        )
+
+    assert tenants == {
+        "Acme Bank": (100_000, 100_000),
+        "ShopFast": (1_000_000, 1_000_000),
+    }
+    assert key_hashes == {hash_api_key(demo.api_key) for demo in DEMO_TENANTS}
+    assert prices == dict(DEMO_PRICES)
+
+    # A re-run creates no duplicates and leaves a changed balance alone.
+    async with get_engine().begin() as connection:
+        await connection.execute(
+            update(Tenant).where(Tenant.name == "Acme Bank").values(balance_cents=42)
+        )
+    await seed()
+
+    async with get_engine().connect() as connection:
+        counts = (
+            (await connection.execute(select(func.count()).select_from(Tenant))).scalar_one(),
+            (await connection.execute(select(func.count()).select_from(ApiKey))).scalar_one(),
+            (await connection.execute(select(func.count()).select_from(Price))).scalar_one(),
+        )
+        acme_balance = (
+            await connection.execute(
+                select(Tenant.balance_cents).where(Tenant.name == "Acme Bank")
+            )
+        ).scalar_one()
+
+    assert counts == (2, 2, 2)
+    assert acme_balance == 42
+
+    # The signed ledger explains ShopFast's balance.
+    async with get_engine().begin() as connection:
+        tenant_id, opening = (
+            await connection.execute(
+                select(Tenant.id, Tenant.opening_balance_cents).where(
+                    Tenant.name == "ShopFast"
+                )
+            )
+        ).one()
+        message_id = await _insert_message(
+            tenant_id, sender_id="SHOPFAST", text="Weekend sale"
+        )
+        await connection.execute(
+            insert(LedgerEntry).values(
+                tenant_id=tenant_id,
+                message_id=message_id,
+                kind="CHARGE",
+                amount_cents=-3,
+                balance_after_cents=opening - 3,
+            )
+        )
+        await connection.execute(
+            update(Tenant).where(Tenant.id == tenant_id).values(balance_cents=opening - 3)
+        )
+        await connection.execute(
+            insert(LedgerEntry).values(
+                tenant_id=tenant_id,
+                message_id=message_id,
+                kind="REFUND",
+                amount_cents=3,
+                balance_after_cents=opening,
+            )
+        )
+        await connection.execute(
+            update(Tenant).where(Tenant.id == tenant_id).values(balance_cents=opening)
+        )
+
+    async with get_engine().connect() as connection:
+        balance = (
+            await connection.execute(
+                select(Tenant.balance_cents).where(Tenant.id == tenant_id)
+            )
+        ).scalar_one()
+        ledger_sum = (
+            await connection.execute(
+                select(func.coalesce(func.sum(LedgerEntry.amount_cents), 0)).where(
+                    LedgerEntry.tenant_id == tenant_id
+                )
+            )
+        ).scalar_one()
+        entries = dict(
+            (
+                await connection.execute(
+                    select(LedgerEntry.kind, LedgerEntry.amount_cents).where(
+                        LedgerEntry.tenant_id == tenant_id
+                    )
+                )
+            ).all()
+        )
+
+    assert balance == opening + ledger_sum
+    assert entries == {"CHARGE": -3, "REFUND": 3}
