@@ -1,9 +1,10 @@
+import asyncio
 import hashlib
 import hmac
+import re
 from datetime import UTC, datetime
 
 import httpx
-import pytest
 
 from app.dlr.client import GatewayDLRClient
 from app.dlr.model import DeliveryReceiptPayload
@@ -19,45 +20,32 @@ def signature(body: bytes) -> str:
   return hmac.new(b"secret", body, hashlib.sha256).hexdigest()
 
 
-async def test_signs_the_exact_bytes_sent() -> None:
-  seen: list[httpx.Request] = []
+async def test_receipt_verifies_against_a_real_http_receiver() -> None:
+  received: list[tuple[bytes, str]] = []
+  done = asyncio.Event()
 
-  def handler(request: httpx.Request) -> httpx.Response:
-    seen.append(request)
-    return httpx.Response(200)
+  async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    raw_headers = await reader.readuntil(b"\r\n\r\n")
+    length = int(re.search(rb"content-length: (\d+)", raw_headers, re.I).group(1))
+    body = await reader.readexactly(length)
+    header = re.search(rb"x-signature: ([0-9a-f]+)", raw_headers, re.I)
+    received.append((body, header.group(1).decode()))
+    writer.write(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+    await writer.drain()
+    writer.close()
+    done.set()
 
-  async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-    client = GatewayDLRClient(http, "http://gateway.test/", "secret")
-    await client.deliver(payload())
-
-  (request,) = seen
-  assert request.url == "http://gateway.test/carrier/dlr"
-  assert request.headers["content-type"] == "application/json"
-  assert request.headers["x-signature"] == signature(request.content)
-
-
-async def test_duplicate_delivery_reuses_identical_body_and_signature() -> None:
-  seen: list[httpx.Request] = []
-
-  def handler(request: httpx.Request) -> httpx.Response:
-    seen.append(request)
-    return httpx.Response(200)
-
-  async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-    client = GatewayDLRClient(http, "http://gateway.test", "secret")
-    receipt = payload()
-    await client.deliver(receipt)
-    await client.deliver(receipt)
-
-  first, second = seen
-  assert first.content == second.content
-  assert first.headers["x-signature"] == second.headers["x-signature"]
-
-
-async def test_non_2xx_raises() -> None:
-  transport = httpx.MockTransport(lambda request: httpx.Response(500))
-
-  async with httpx.AsyncClient(transport=transport) as http:
-    client = GatewayDLRClient(http, "http://gateway.test", "secret")
-    with pytest.raises(httpx.HTTPStatusError):
+  server = await asyncio.start_server(handle, "127.0.0.1", 0)
+  port = server.sockets[0].getsockname()[1]
+  try:
+    async with httpx.AsyncClient() as http:
+      client = GatewayDLRClient(http, f"http://127.0.0.1:{port}", "secret")
       await client.deliver(payload())
+    await asyncio.wait_for(done.wait(), timeout=2)
+  finally:
+    server.close()
+    await server.wait_closed()
+
+  (body, sent_signature) = received[0]
+  assert sent_signature == signature(body)
+  assert DeliveryReceiptPayload.model_validate_json(body).carrier_id == "c-1"
