@@ -146,16 +146,16 @@ class Message(Base):
         ),
         UniqueConstraint("id", "tenant_id"),
         Index(
-            "uq_messages_carrier_carrier_id",
+            "idx_carrier_carrier_id",
             "carrier",
             "carrier_id",
             unique=True,
             postgresql_where=sa_text("carrier_id IS NOT NULL"),
         ),
-        Index("ix_messages_tenant_id_created_at", "tenant_id", sa_text("created_at DESC")),
-        Index("ix_messages_status_available_at", "status", "available_at"),
-        Index("ix_messages_carrier_id", "carrier_id"),
-        Index("ix_messages_tenant_id_status", "tenant_id", "status"),
+        Index("idx_tenant_id_created_at", "tenant_id", sa_text("created_at DESC")),
+        Index("idx_status_available_at", "status", "available_at"),
+        Index("idx_carrier_id", "carrier_id"),
+        Index("idx_tenant_id_status", "tenant_id", "status"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
@@ -191,7 +191,7 @@ class MessageEvent(Base):
             name="ck_message_events_status_valid",
         ),
         UniqueConstraint("message_id", "status"),
-        Index("ix_message_events_message_id_id", "message_id", "id"),
+        Index("idx_message_id_id", "message_id", "id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
@@ -227,7 +227,7 @@ class LedgerEntry(Base):
             ["messages.id", "messages.tenant_id"],
             name="fk_ledger_entries_message_id_tenant_id_messages",
         ),
-        Index("ix_ledger_entries_tenant_id_created_at", "tenant_id", "created_at"),
+        Index("idx_ledger_entries_tenant_id_created_at", "tenant_id", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)

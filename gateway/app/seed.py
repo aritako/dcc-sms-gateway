@@ -32,13 +32,7 @@ DEMO_PRICES = (
 
 
 async def seed() -> None:
-    """Insert baseline tenants, API keys and prices.
-
-    Idempotent by construction: tenants and keys use ON CONFLICT DO NOTHING, so
-    a re-run never duplicates a row or resets a balance. Prices upsert on the
-    prefix so a corrected rate actually propagates. Everything is one
-    transaction, so a partial seed cannot survive a failure.
-    """
+    """Insert the baseline tenants, API keys and prices."""
     async with get_engine().begin() as connection:
         for demo in DEMO_TENANTS:
             await connection.execute(

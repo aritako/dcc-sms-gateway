@@ -184,17 +184,17 @@ def upgrade() -> None:
         sa.UniqueConstraint("id", "tenant_id", name="uq_messages_id_tenant_id"),
     )
     op.create_index(
-        "ix_messages_tenant_id_created_at",
+        "idx_tenant_id_created_at",
         "messages",
         ["tenant_id", sa.text("created_at DESC")],
     )
     op.create_index(
-        "ix_messages_status_available_at", "messages", ["status", "available_at"]
+        "idx_status_available_at", "messages", ["status", "available_at"]
     )
-    op.create_index("ix_messages_carrier_id", "messages", ["carrier_id"])
-    op.create_index("ix_messages_tenant_id_status", "messages", ["tenant_id", "status"])
+    op.create_index("idx_carrier_id", "messages", ["carrier_id"])
+    op.create_index("idx_tenant_id_status", "messages", ["tenant_id", "status"])
     op.create_index(
-        "uq_messages_carrier_carrier_id",
+        "idx_carrier_carrier_id",
         "messages",
         ["carrier", "carrier_id"],
         unique=True,
@@ -229,7 +229,7 @@ def upgrade() -> None:
         ),
     )
     op.create_index(
-        "ix_message_events_message_id_id", "message_events", ["message_id", "id"]
+        "idx_message_id_id", "message_events", ["message_id", "id"]
     )
 
     op.create_table(
@@ -280,7 +280,7 @@ def upgrade() -> None:
         ),
     )
     op.create_index(
-        "ix_ledger_entries_tenant_id_created_at",
+        "idx_ledger_entries_tenant_id_created_at",
         "ledger_entries",
         ["tenant_id", "created_at"],
     )

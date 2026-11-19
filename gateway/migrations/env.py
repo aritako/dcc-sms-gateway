@@ -22,13 +22,8 @@ target_metadata = Base.metadata
 
 
 def _database_url() -> str:
-    """Read configuration lazily, using the sync psycopg driver for migrations.
-
-    ``config.attributes["database_url"]`` lets a test or one-off command target
-    a throwaway database; normal CLI use falls back to the shared settings URL.
-    """
-    url: str = config.attributes.get("database_url") or get_settings().database_url
-    return url.replace("+asyncpg", "+psycopg")
+    """Read configuration lazily, using the sync psycopg driver for migrations."""
+    return get_settings().database_url.replace("+asyncpg", "+psycopg")
 
 
 def run_migrations_offline() -> None:
