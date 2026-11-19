@@ -10,6 +10,7 @@ E164_PATTERN = r"^\+[1-9][0-9]{1,14}$"
 # Max 11 alphanum chars
 SENDER_ID_PATTERN = r"^[A-Za-z0-9]{1,11}$"
 
+MAX_BATCH_SIZE = 1_000
 
 class MessagesRequest(BaseModel):
   to: str = Field(pattern=E164_PATTERN)
@@ -40,5 +41,25 @@ class QuoteResponse(BaseModel):
   segments: int
   # Integer cents
   price_per_segment: int
+  total_price: int
+  currency: str
+
+class BatchRequest(BaseModel):
+  messages: list[dict[str, Any]]
+
+
+class BatchMessage(BaseModel):
+  id: uuid.UUID
+  status: MessageStatus
+  client_ref: str | None
+  encoding: Encoding
+  segments: int
+  price_per_segment: int
+  total_price: int
+
+
+class BatchResponse(BaseModel):
+  batch_id: uuid.UUID
+  messages: list[BatchMessage]
   total_price: int
   currency: str
