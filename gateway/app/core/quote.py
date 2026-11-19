@@ -1,9 +1,8 @@
-from sqlalchemy import select, literal, func
+from sqlalchemy import func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.encoding import EncodingService
 from app.db.models import Price
-
 
 
 class QuoteService:
