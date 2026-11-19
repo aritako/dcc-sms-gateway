@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import tenant_for_api_key
 from app.core.billing import InsufficientBalance
 from app.core.quote import UnknownDestination
 from app.db.database import get_session
@@ -20,7 +21,7 @@ async def receive_messages(
 ) -> MessagesResponse | JSONResponse:
   handler = MessagesHandler(db)
 
-  tenant = await handler.tenant_for_api_key(api_key or "")
+  tenant = await tenant_for_api_key(db, api_key or "")
   if tenant is None:
     return handler.error_response(401, "UNAUTHORIZED")
 
@@ -65,7 +66,7 @@ async def quote(
     if tenant is None:
       return handler.error_response(404, "NOT_FOUND")
   else:
-    tenant = await handler.tenant_for_api_key(api_key or "")
+    tenant = await tenant_for_api_key(db, api_key or "")
     if tenant is None:
       return handler.error_response(401, "UNAUTHORIZED")
 
