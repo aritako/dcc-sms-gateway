@@ -3,14 +3,14 @@ import logging
 
 
 async def main():
-    logging.basicConfig(level=logging.INFO)
-    while True:
-        logging.info("worker alive")
-        await asyncio.sleep(5)
+  logging.basicConfig(level=logging.INFO)
+  while True:
+    logging.info("worker alive")
+    await asyncio.sleep(5)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+  try:
+    asyncio.run(main())
+  except KeyboardInterrupt:
+    pass

@@ -70,9 +70,9 @@ async def _book_dlr(
     sender.schedule(receipt)
 
 
-@router.post("")
+@router.post("", response_model=SubmitResponse)
 @limiter.limit(_limit)
-async def submit(request: Request, payload: SubmitRequest) -> SubmitResponse:
+async def submit(request: Request, payload: SubmitRequest) -> SubmitResponse | JSONResponse:
   store.note_message(payload.message_id)
   sender = request.app.state.dlr_sender
 
