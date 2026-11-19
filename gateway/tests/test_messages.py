@@ -1,6 +1,7 @@
 import asyncio
 from collections import Counter
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
@@ -115,6 +116,9 @@ async def test_send_writes_message_event_and_charge(
   assert message.tenant_id == tenant.id
   assert message.status == MessageStatus.ACCEPTED
   assert message.total_price_cents == 3
+  # Claimable immediately: the row itself is the queue.
+  assert message.available_at is not None
+  assert message.available_at <= datetime.now(UTC)
 
   statuses = (
     await session.scalars(select(MessageEvent.status).where(MessageEvent.message_id == message.id))
@@ -128,6 +132,31 @@ async def test_send_writes_message_event_and_charge(
   assert charge.balance_after_cents == 9_997
 
   assert await _balance(session, tenant) == 9_997
+
+
+@pytest.mark.parametrize(
+  ("override", "field"),
+  [
+    ({"to": "8801712345678"}, "to"),  # missing +
+    ({"from": "ACME-SMS-1234"}, "from"),  # not alphanumeric
+    ({"text": ""}, "text"),
+  ],
+)
+async def test_invalid_payload_is_422_and_writes_nothing(
+  client: AsyncClient,
+  session: AsyncSession,
+  tenant: Tenant,
+  override: dict[str, str],
+  field: str,
+) -> None:
+  response = await _send(client, **override)
+
+  assert response.status_code == 422
+  assert any(field in error["loc"] for error in response.json()["detail"])
+  assert await _count(session, Message) == 0
+  assert await _count(session, MessageEvent) == 0
+  assert await _count(session, LedgerEntry) == 0
+  assert await _balance(session, tenant) == 10_000
 
 
 async def test_unknown_destination_is_422_and_writes_nothing(
