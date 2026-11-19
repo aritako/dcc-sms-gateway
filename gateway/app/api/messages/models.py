@@ -9,6 +9,8 @@ E164_PATTERN = r"^\+[1-9][0-9]{1,14}$"
 
 # Max 11 alphanum chars
 SENDER_ID_PATTERN = r"^[A-Za-z0-9]{1,11}$"
+
+
 class MessagesRequest(BaseModel):
   to: str = Field(pattern=E164_PATTERN)
   from_: str = Field(alias="from", pattern=SENDER_ID_PATTERN)
@@ -22,6 +24,7 @@ class MessagesResponse(BaseModel):
   client_ref: str | None
   encoding: Encoding
   segments: int
+  price_per_segment: int
   total_price: int
   currency: str
 

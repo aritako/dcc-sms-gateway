@@ -1,12 +1,10 @@
-from uuid import uuid7
-
 from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.billing import InsufficientBalance
 from app.core.quote import UnknownDestination
 from app.db.database import get_session
-from app.db.models import Encoding, MessageStatus
 
 from .handler import MessagesHandler
 from .models import MessagesRequest, MessagesResponse, QuoteRequest, QuoteResponse
@@ -14,7 +12,7 @@ from .models import MessagesRequest, MessagesResponse, QuoteRequest, QuoteRespon
 router = APIRouter()
 
 
-@router.post("", response_model=MessagesResponse)
+@router.post("", response_model=MessagesResponse, status_code=202)
 async def receive_messages(
   payload: MessagesRequest,
   db: AsyncSession = Depends(get_session),
@@ -23,17 +21,29 @@ async def receive_messages(
   handler = MessagesHandler(db)
 
   tenant = await handler.tenant_for_api_key(api_key or "")
-  if await tenant is None:
+  if tenant is None:
     return handler.error_response(401, "UNAUTHORIZED")
 
+  try:
+    message, quote = await handler.accept_message(tenant, payload)
+  except UnknownDestination:
+    await db.rollback()
+    return handler.error_response(422, "UNSUPPORTED_DESTINATION")
+  except InsufficientBalance:
+    await db.rollback()
+    return handler.error_response(402, "INSUFFICIENT_BALANCE")
+
+  await db.commit()
+
   return MessagesResponse(
-    id=uuid7(),
-    status=MessageStatus.ACCEPTED,
-    client_ref=None,
-    encoding=Encoding.GSM7,
-    segments= 67,
-    total_price= 67,
-    currency="USD",
+    id=message.id,
+    status=message.status,
+    client_ref=message.client_ref,
+    encoding=quote.encoding,
+    segments=quote.segments,
+    price_per_segment=quote.price_per_segment_cents,
+    total_price=quote.total_price_cents,
+    currency=quote.currency,
   )
 
 

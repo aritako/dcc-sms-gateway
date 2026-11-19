@@ -41,41 +41,35 @@ class MessagesHandler:
     service = QuoteService(self.db, EncodingService(), tenant.currency)
     return await service.quote(text, to)
 
-  async def accept_message(self, tenant: Tenant, payload: MessagesRequest):
-    # Immediately accepts a message, should return a 200
-    # An async worker will be responsible for the delivery 
-    try: 
-      quote = await self.get_quote(text=payload.text,to=payload.to, tenant=tenant)
+  async def accept_message(self, tenant: Tenant, payload: MessagesRequest) -> tuple[Message, Quote]:
+    """Write the ACCEPTED message, its event and the charge in one transaction.
 
-      message = Message(
-        id=uuid7(),  # needed now for the events; the column default only fires at flush
-        tenant_id=tenant.id,
-        to_number=payload.to,
-        sender_id=payload.from_,
-        text=payload.text,
-        client_ref=payload.client_ref,
-        encoding=quote.encoding,
-        segments=quote.segments,
-        price_per_segment_cents=quote.price_per_segment_cents,
-        total_price_cents=quote.total_price_cents,
-        status=MessageStatus.QUEUED,
-      )
-      self.db.add(message)
-      self.db.add_all(
-        [
-          MessageEvent(message_id=message.id, status=MessageStatus.ACCEPTED),
-          MessageEvent(message_id=message.id, status=MessageStatus.QUEUED),
-        ]
-      )
-      await self.db.flush()
+    The caller commits. Errors propagate untouched so the controller can map
+    them to status codes; the request session rolls back when it closes.
+    """
+    quote = await self.get_quote(text=payload.text, to=payload.to, tenant=tenant)
 
-      billingService = BillingService(self.db)
-      await billingService.charge(
-        tenant_id=tenant.id, message_id=message.id, amount_cents=quote.total_price_cents
-      )
-      return message, quote
-    except Exception:
-      await self.db.rollback()
+    message = Message(
+      id=uuid7(),  # needed now for the events; the column default only fires at flush
+      tenant_id=tenant.id,
+      to_number=payload.to,
+      sender_id=payload.from_,
+      text=payload.text,
+      client_ref=payload.client_ref,
+      encoding=quote.encoding,
+      segments=quote.segments,
+      price_per_segment_cents=quote.price_per_segment_cents,
+      total_price_cents=quote.total_price_cents,
+      status=MessageStatus.ACCEPTED,
+    )
+    self.db.add(message)
+    self.db.add(MessageEvent(message_id=message.id, status=MessageStatus.ACCEPTED))
+    await self.db.flush()
+
+    await BillingService(self.db).charge(
+      tenant_id=tenant.id, message_id=message.id, amount_cents=quote.total_price_cents
+    )
+    return message, quote
 
   def error_response(self, status_code: int, code: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"error": code})
