@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, Header
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import tenant_for_api_key
+from app.core.billing import InsufficientBalance
 from app.core.quote import UnknownDestination
 from app.db.database import get_session
 
@@ -11,17 +13,39 @@ from .models import MessagesRequest, MessagesResponse, QuoteRequest, QuoteRespon
 router = APIRouter()
 
 
-@router.post("", response_model=MessagesResponse)
+@router.post("", response_model=MessagesResponse, status_code=202)
 async def receive_messages(
   payload: MessagesRequest,
   db: AsyncSession = Depends(get_session),
   api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> MessagesResponse | JSONResponse:
   handler = MessagesHandler(db)
-  if await handler.tenant_for_api_key(api_key or "") is None:
+
+  tenant = await tenant_for_api_key(db, api_key or "")
+  if tenant is None:
     return handler.error_response(401, "UNAUTHORIZED")
 
-  return MessagesResponse(message_id="6-7")
+  try:
+    message, quote = await handler.accept_message(tenant, payload)
+  except UnknownDestination:
+    await db.rollback()
+    return handler.error_response(422, "UNSUPPORTED_DESTINATION")
+  except InsufficientBalance:
+    await db.rollback()
+    return handler.error_response(402, "INSUFFICIENT_BALANCE")
+
+  await db.commit()
+
+  return MessagesResponse(
+    id=message.id,
+    status=message.status,
+    client_ref=message.client_ref,
+    encoding=quote.encoding,
+    segments=quote.segments,
+    price_per_segment=quote.price_per_segment_cents,
+    total_price=quote.total_price_cents,
+    currency=quote.currency,
+  )
 
 
 @router.post("/quote", response_model=QuoteResponse)
@@ -42,7 +66,7 @@ async def quote(
     if tenant is None:
       return handler.error_response(404, "NOT_FOUND")
   else:
-    tenant = await handler.tenant_for_api_key(api_key or "")
+    tenant = await tenant_for_api_key(db, api_key or "")
     if tenant is None:
       return handler.error_response(401, "UNAUTHORIZED")
 
