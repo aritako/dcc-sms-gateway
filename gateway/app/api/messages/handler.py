@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.encoding import EncodingService
 from app.core.quote import Quote, QuoteService
 from app.db.models import ApiKey, Tenant
+from app.api.messages.models import MessagesRequest
 from app.security import hash_api_key
 from app.settings import get_settings
 
@@ -38,6 +39,11 @@ class MessagesHandler:
   async def get_quote(self, text: str, to: str, tenant: Tenant) -> Quote:
     service = QuoteService(self.db, EncodingService(), tenant.currency)
     return await service.quote(text, to)
+
+  async def accept_message(self, tenant: Tenant, payload: MessagesRequest):
+    # Immediately accepts a message, should return a 200
+    # An async worker will be responsible for the delivery 
+    pass
 
   def error_response(self, status_code: int, code: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"error": code})
