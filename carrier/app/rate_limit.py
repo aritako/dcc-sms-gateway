@@ -1,4 +1,4 @@
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 
-limiter = Limiter(key_func=get_remote_address)
+# The carrier limit applies to the whole process, not per caller IP.
+limiter = Limiter(key_func=lambda request: "carrier")
