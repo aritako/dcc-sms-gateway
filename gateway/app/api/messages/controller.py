@@ -22,8 +22,8 @@ async def receive_messages(
 ) -> MessagesResponse | JSONResponse:
   handler = MessagesHandler(db)
 
-  tenant = handler.tenant_for_api_key(api_key or "")
-  if tenant is None:
+  tenant = await handler.tenant_for_api_key(api_key or "")
+  if await tenant is None:
     return handler.error_response(401, "UNAUTHORIZED")
 
   return MessagesResponse(

@@ -45,7 +45,7 @@ class MessagesHandler:
     # Immediately accepts a message, should return a 200
     # An async worker will be responsible for the delivery 
     
-    quote = self.get_quote(text=payload.text,to=payload.to, tenant=tenant)
+    quote = await self.get_quote(text=payload.text,to=payload.to, tenant=tenant)
 
     message = Message(
       id=uuid7(),  # needed now for the events; the column default only fires at flush
