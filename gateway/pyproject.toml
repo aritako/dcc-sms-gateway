@@ -57,8 +57,8 @@ select = ["E", "F", "I", "B", "UP"]
 known-first-party = ["app"]
 
 [tool.ruff.lint.flake8-bugbear]
-# FastAPI dependencies and header params are declared as call defaults by design.
-extend-immutable-calls = ["fastapi.Depends", "fastapi.Header"]
+# FastAPI dependencies and header/query params are declared as call defaults by design.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Header", "fastapi.Query"]
 
 [tool.ruff.lint.per-file-ignores]
 # Alembic's generated template imports op/sa even for an empty revision.

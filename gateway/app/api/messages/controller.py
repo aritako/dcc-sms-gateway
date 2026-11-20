@@ -1,23 +1,31 @@
-from fastapi import APIRouter, Depends, Header, Request
+import uuid
+
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import JSONResponse
+from pydantic import AwareDatetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import tenant_for_api_key
+from app.api.deps import read_scope, tenant_for_api_key
 from app.core.billing import InsufficientBalance
 from app.core.idempotency import IdempotencyService
 from app.core.quote import UnknownDestination
 from app.db.database import get_session
+from app.db.models import MessageStatus, Tenant
+from app.security import admin_key_matches
 
 from .handler import InvalidBatch, MessagesHandler
 from .models import (
   MAX_BATCH_SIZE,
   BatchRequest,
   BatchResponse,
+  MessageDetail,
+  MessagesPage,
   MessagesRequest,
   MessagesResponse,
   QuoteRequest,
   QuoteResponse,
 )
+from .reads import MessagesReader
 
 router = APIRouter()
 
@@ -143,7 +151,7 @@ async def quote(
   handler = MessagesHandler(db)
 
   if admin_key is not None:
-    if not handler.admin_key_matches(admin_key):
+    if not admin_key_matches(admin_key):
       return handler.error_response(401, "UNAUTHORIZED")
     if payload.tenant_id is None:
       return handler.error_response(422, "TENANT_ID_REQUIRED")
@@ -167,3 +175,34 @@ async def quote(
     total_price=quotation.total_price_cents,
     currency=quotation.currency,
   )
+
+
+@router.get("", response_model=MessagesPage)
+async def list_messages(
+  db: AsyncSession = Depends(get_session),
+  tenant: Tenant | None = Depends(read_scope),
+  status: MessageStatus | None = Query(default=None),
+  client_ref: str | None = Query(default=None),
+  created_after: AwareDatetime | None = Query(default=None),
+  created_before: AwareDatetime | None = Query(default=None),
+  limit: int = Query(default=50, ge=1, le=200),
+  offset: int = Query(default=0, ge=0),
+) -> MessagesPage:
+  return await MessagesReader(db).list_messages(
+    tenant,
+    status=status,
+    client_ref=client_ref,
+    created_after=created_after,
+    created_before=created_before,
+    limit=limit,
+    offset=offset,
+  )
+
+
+@router.get("/{message_id}", response_model=MessageDetail)
+async def message_detail(
+  message_id: uuid.UUID,
+  db: AsyncSession = Depends(get_session),
+  tenant: Tenant | None = Depends(read_scope),
+) -> MessageDetail:
+  return await MessagesReader(db).get_message(tenant, message_id)

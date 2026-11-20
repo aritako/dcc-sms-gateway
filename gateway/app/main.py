@@ -2,12 +2,15 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.api.balance import controller as balance
+from app.api.errors import ApiError
+from app.api.ledger import controller as ledger
 from app.api.messages import controller
+from app.api.stats import controller as stats
 from app.db.database import dispose_engine, get_engine
 from app.db.redis import close_redis, get_redis
 from app.settings import get_settings
@@ -28,9 +31,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="DCC SMS Gateway", lifespan=lifespan)
+
+
+@app.exception_handler(ApiError)
+async def api_error_handler(_request: Request, error: ApiError) -> JSONResponse:
+  """Render dependency and endpoint failures in the uniform error envelope."""
+  return JSONResponse(status_code=error.status_code, content={"error": error.code})
+
+
 v1_router = APIRouter(prefix="/v1", tags=["v1"])
 v1_router.include_router(controller.router, prefix="/messages", tags=["messages"])
 v1_router.include_router(balance.router, tags=["balance"])
+v1_router.include_router(ledger.router, tags=["ledger"])
+v1_router.include_router(stats.router, tags=["stats"])
 app.include_router(v1_router)
 
 

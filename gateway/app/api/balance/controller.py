@@ -1,12 +1,12 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Header
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import tenant_for_api_key
+from app.api.deps import tenant_read_scope
+from app.api.errors import ApiError
 from app.db.database import get_session
 from app.db.models import LedgerEntry, Tenant
 
@@ -25,12 +25,8 @@ class BalanceResponse(BaseModel):
 @router.get("/balance", response_model=BalanceResponse)
 async def balance(
   db: AsyncSession = Depends(get_session),
-  api_key: str | None = Header(default=None, alias="X-API-Key"),
-) -> BalanceResponse | JSONResponse:
-  tenant = await tenant_for_api_key(db, api_key or "")
-  if tenant is None:
-    return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED"})
-
+  tenant: Tenant = Depends(tenant_read_scope),
+) -> BalanceResponse:
   # One statement, so balance, opening balance and the ledger sum share a
   # snapshot. `now()` is the transaction timestamp the row was read at.
   ledger_sum = (
@@ -50,7 +46,7 @@ async def balance(
     )
   ).one_or_none()
   if row is None:  # deleted between auth and this read
-    return JSONResponse(status_code=401, content={"error": "UNAUTHORIZED"})
+    raise ApiError(401, "UNAUTHORIZED")
 
   return BalanceResponse(
     balance=row.balance_cents,
