@@ -8,8 +8,8 @@ from app.core.idempotency import IdempotencyService
 from app.core.quote import UnknownDestination
 from app.db.database import get_session
 
-from .handler import MessagesHandler, InvalidBatch
-from .models import MessagesRequest, MessagesResponse, QuoteRequest, QuoteResponse, MAX_BATCH_SIZE
+from .handler import InvalidBatch, MessagesHandler
+from .models import MAX_BATCH_SIZE, MessagesRequest, MessagesResponse, QuoteRequest, QuoteResponse
 
 router = APIRouter()
 
