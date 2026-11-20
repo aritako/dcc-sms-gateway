@@ -1,4 +1,3 @@
-import secrets
 from dataclasses import asdict, dataclass
 from typing import Any
 from uuid import UUID, uuid7
@@ -12,7 +11,6 @@ from app.core.billing import BillingService
 from app.core.encoding import EncodingService
 from app.core.quote import Quote, QuoteService, UnknownDestination
 from app.db.models import Message, MessageEvent, MessageStatus, Tenant
-from app.settings import get_settings
 
 from .models import BatchMessage, BatchResponse, MessagesRequest
 
@@ -36,12 +34,6 @@ class InvalidBatch(Exception):
 class MessagesHandler:
   def __init__(self, db: AsyncSession) -> None:
     self.db = db
-
-  def admin_key_matches(self, admin_key: str) -> bool:
-    # compare_digest raises TypeError on non-ASCII str; bytes compare is total.
-    return secrets.compare_digest(
-      admin_key.encode("utf-8"), get_settings().admin_api_key.encode("utf-8")
-    )
 
   async def tenant_by_id(self, tenant_id: UUID) -> Tenant | None:
     return await self.db.get(Tenant, tenant_id)

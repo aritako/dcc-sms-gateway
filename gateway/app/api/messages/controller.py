@@ -7,6 +7,7 @@ from app.core.billing import InsufficientBalance
 from app.core.idempotency import IdempotencyService
 from app.core.quote import UnknownDestination
 from app.db.database import get_session
+from app.security import admin_key_matches
 
 from .handler import InvalidBatch, MessagesHandler
 from .models import (
@@ -143,7 +144,7 @@ async def quote(
   handler = MessagesHandler(db)
 
   if admin_key is not None:
-    if not handler.admin_key_matches(admin_key):
+    if not admin_key_matches(admin_key):
       return handler.error_response(401, "UNAUTHORIZED")
     if payload.tenant_id is None:
       return handler.error_response(422, "TENANT_ID_REQUIRED")
