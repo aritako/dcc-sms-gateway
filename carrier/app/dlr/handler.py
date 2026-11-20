@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 import httpx
 
 from app.settings import Settings, get_settings
-
 from .client import GatewayDLRClient
 from .model import DeliveryReceiptPayload
 

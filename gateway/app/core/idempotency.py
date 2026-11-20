@@ -12,7 +12,13 @@ from app.db.models import IdempotencyKey
 
 
 class IdempotencyService:
-  """Reserve, replay and complete one response per (tenant, Idempotency-Key)."""
+  """Reserve, replay and complete one response per (tenant, Idempotency-Key).
+
+  The reservation is the first write of a send: concurrent duplicates block on
+  the primary key until the winner commits, then replay it. Only 2xx responses
+  are completed (there is no TTL cleanup yet); a failed send rolls its
+  reservation back, so the client can retry the same key after fixing the cause.
+  """
 
   def __init__(self, db: AsyncSession) -> None:
     self.db = db
@@ -38,7 +44,9 @@ class IdempotencyService:
     assert stored.response_status is not None and stored.response_body is not None
     return JSONResponse(status_code=stored.response_status, content=stored.response_body)
 
-  async def claim(self, tenant_id: uuid.UUID, key: str, request_hash: str) -> IdempotencyKey | None:
+  async def claim(
+    self, tenant_id: uuid.UUID, key: str, request_hash: str
+  ) -> IdempotencyKey | None:
     """Reserve the key (returns None), or return the row already stored for it.
 
     Must be the first write of the transaction: a duplicate blocks on the primary

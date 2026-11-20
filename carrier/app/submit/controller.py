@@ -2,14 +2,14 @@ import asyncio
 import random
 from enum import StrEnum
 
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
+
 from app import store
 from app.dlr.handler import DeliveryReceiptSender
 from app.dlr.model import DeliveryReceiptPayload
 from app.rate_limit import limiter
 from app.settings import get_settings
-from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
-
 from .model import SubmitRequest, SubmitResponse
 
 router = APIRouter()
