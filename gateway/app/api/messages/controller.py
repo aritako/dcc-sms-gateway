@@ -9,7 +9,7 @@ from app.core.quote import UnknownDestination
 from app.db.database import get_session
 
 from .handler import InvalidBatch, MessagesHandler
-from .models import MAX_BATCH_SIZE, MessagesRequest, MessagesResponse, QuoteRequest, QuoteResponse
+from .models import MAX_BATCH_SIZE, MessagesRequest, MessagesResponse, QuoteRequest, QuoteResponse, BatchRequest, BatchResponse
 
 router = APIRouter()
 
@@ -68,9 +68,9 @@ async def receive_messages(
   await db.commit()
   return response
 
-@router.post("/batch", response_model=list[MessagesResponse], status_code=202)
+@router.post("/batch", response_model=BatchResponse, status_code=202)
 async def receive_batch_messages(
-  payload: list[MessagesRequest],
+  payload: BatchRequest,
   request: Request,
   db: AsyncSession = Depends(get_session),
   api_key: str | None = Header(default=None, alias="X-API-Key"),
