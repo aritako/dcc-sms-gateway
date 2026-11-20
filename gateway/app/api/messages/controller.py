@@ -9,7 +9,15 @@ from app.core.quote import UnknownDestination
 from app.db.database import get_session
 
 from .handler import InvalidBatch, MessagesHandler
-from .models import MAX_BATCH_SIZE, MessagesRequest, MessagesResponse, QuoteRequest, QuoteResponse, BatchRequest, BatchResponse
+from .models import (
+  MAX_BATCH_SIZE,
+  BatchRequest,
+  BatchResponse,
+  MessagesRequest,
+  MessagesResponse,
+  QuoteRequest,
+  QuoteResponse,
+)
 
 router = APIRouter()
 
@@ -105,24 +113,13 @@ async def receive_batch_messages(
       return idempotencyService.replay(stored, fingerprint)
 
   try:
-    message, quote = await handler.accept_batch(tenant, payload)
-  except UnknownDestination:
-    await db.rollback()
-    return handler.error_response(422, "UNSUPPORTED_DESTINATION")
+    response = await handler.accept_batch(tenant, items)
+  except InvalidBatch as error:
+    await db.rollback()  # also releases the idempotency reservation
+    return handler.invalid_batch_response(error.errors)
   except InsufficientBalance:
     await db.rollback()
     return handler.error_response(402, "INSUFFICIENT_BALANCE")
-
-  response = MessagesResponse(
-    id=message.id,
-    status=message.status,
-    client_ref=message.client_ref,
-    encoding=quote.encoding,
-    segments=quote.segments,
-    price_per_segment=quote.price_per_segment_cents,
-    total_price=quote.total_price_cents,
-    currency=quote.currency,
-  )
 
   if idempotency_key is not None:
     await idempotencyService.complete(
