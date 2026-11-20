@@ -11,6 +11,7 @@ make dev                  # start Postgres and Redis
 make migrate              # apply database migrations
 make seed                 # insert baseline data (idempotent)
 make test                 # run the gateway tests
+make test-all             # run the gateway and carrier tests
 ```
 
 Start the whole stack:

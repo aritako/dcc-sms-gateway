@@ -155,6 +155,8 @@ class Message(Base):
 
   id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
   tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+  # For batch sends
+  batch_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
   to_number: Mapped[str] = mapped_column(String(16))
   sender_id: Mapped[str] = mapped_column(String(11))
   text: Mapped[str] = mapped_column(Text)

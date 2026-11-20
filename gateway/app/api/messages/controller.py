@@ -8,8 +8,16 @@ from app.core.idempotency import IdempotencyService
 from app.core.quote import UnknownDestination
 from app.db.database import get_session
 
-from .handler import MessagesHandler
-from .models import MessagesRequest, MessagesResponse, QuoteRequest, QuoteResponse
+from .handler import InvalidBatch, MessagesHandler
+from .models import (
+  MAX_BATCH_SIZE,
+  BatchRequest,
+  BatchResponse,
+  MessagesRequest,
+  MessagesResponse,
+  QuoteRequest,
+  QuoteResponse,
+)
 
 router = APIRouter()
 
@@ -59,6 +67,62 @@ async def receive_messages(
     total_price=quote.total_price_cents,
     currency=quote.currency,
   )
+
+  if idempotency_key is not None:
+    await idempotencyService.complete(
+      tenant.id, idempotency_key, 202, response.model_dump(mode="json")
+    )
+
+  await db.commit()
+  return response
+
+
+@router.post("/batch", response_model=BatchResponse, status_code=202)
+async def receive_batch_messages(
+  payload: BatchRequest,
+  request: Request,
+  db: AsyncSession = Depends(get_session),
+  api_key: str | None = Header(default=None, alias="X-API-Key"),
+  idempotency_key: str | None = Header(
+    default=None, alias="Idempotency-Key", min_length=1, max_length=255
+  ),
+) -> BatchResponse | JSONResponse:
+  handler = MessagesHandler(db)
+
+  tenant = await tenant_for_api_key(db, api_key or "")
+  if tenant is None:
+    return handler.error_response(401, "UNAUTHORIZED")
+
+  if len(payload.messages) < 1:
+    return handler.error_response(422, "BATCH_EMPTY")
+  elif len(payload.messages) > MAX_BATCH_SIZE:
+    return handler.error_response(422, "BATCH_TOO_LARGE")
+
+  try:
+    items = handler.parse_batch(payload.messages)
+  except InvalidBatch as error:
+    return handler.invalid_batch_response(error.errors)
+
+  idempotencyService = IdempotencyService(db)
+  fingerprint: str | None = None
+  if idempotency_key is not None:
+    fingerprint = idempotencyService.request_hash(
+      request.method,
+      request.url.path,
+      {"messages": [item.model_dump(by_alias=True) for item in items]},
+    )
+    stored = await idempotencyService.claim(tenant.id, idempotency_key, fingerprint)
+    if stored is not None:
+      return idempotencyService.replay(stored, fingerprint)
+
+  try:
+    response = await handler.accept_batch(tenant, items)
+  except InvalidBatch as error:
+    await db.rollback()  # also releases the idempotency reservation
+    return handler.invalid_batch_response(error.errors)
+  except InsufficientBalance:
+    await db.rollback()
+    return handler.error_response(402, "INSUFFICIENT_BALANCE")
 
   if idempotency_key is not None:
     await idempotencyService.complete(
