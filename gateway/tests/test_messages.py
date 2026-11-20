@@ -461,3 +461,97 @@ async def test_insufficient_aggregate_balance_is_402_and_writes_nothing(
   assert response.json() == {"error": "INSUFFICIENT_BALANCE"}
   await _assert_nothing_written(session, tenant, 29)
   assert await session.get(IdempotencyKey, (tenant.id, "broke-batch")) is None
+
+
+async def test_empty_batch_is_422_and_writes_nothing(
+  client: AsyncClient, session: AsyncSession
+) -> None:
+  tenant = await _create_tenant(session)
+
+  response = await _send_batch(client, [])
+
+  assert response.status_code == 422
+  assert response.json() == {"error": "BATCH_EMPTY"}
+  await _assert_nothing_written(session, tenant, 10_000)
+
+
+async def test_batch_of_1001_is_422_and_writes_nothing(
+  client: AsyncClient, session: AsyncSession
+) -> None:
+  tenant = await _create_tenant(session)
+
+  response = await _send_batch(client, _items(1_001))
+
+  assert response.status_code == 422
+  assert response.json() == {"error": "BATCH_TOO_LARGE"}
+  await _assert_nothing_written(session, tenant, 10_000)
+
+
+@pytest.mark.parametrize(
+  ("override", "field"),
+  [
+    ({"to": "8801712345678"}, "to"),
+    ({"text": ""}, "text"),
+    ({"from": "ACME-SMS-1234"}, "from"),
+    ({"to": "+15551234567"}, "to"),  # well-formed but unpriced
+  ],
+)
+async def test_one_invalid_item_is_422_and_writes_nothing(
+  client: AsyncClient,
+  session: AsyncSession,
+  override: dict[str, str],
+  field: str,
+) -> None:
+  tenant = await _create_tenant(session)
+  items = _items(5)
+  items[3] = {**MESSAGE, **override}
+
+  response = await _send_batch(client, items)
+
+  assert response.status_code == 422
+  body = response.json()
+  assert body["error"] == "INVALID_BATCH_ITEM"
+  (error,) = body["errors"]
+  assert set(error) == {"index", "field", "code", "message"}
+  assert error["index"] == 3
+  assert error["field"] == field
+  assert error["message"]
+  await _assert_nothing_written(session, tenant, 10_000)
+
+
+async def test_replay_returns_the_same_ids_and_charges_once(
+  client: AsyncClient, session: AsyncSession
+) -> None:
+  tenant = await _create_tenant(session, balance_cents=1_000)
+
+  first = await _send_batch(client, _items(3), idempotency_key="batch-key")
+  second = await _send_batch(client, _items(3), idempotency_key="batch-key")
+
+  assert first.status_code == 202
+  assert second.status_code == 202
+  assert second.json() == first.json()
+  assert await _count(session, Message) == 3
+  assert await _count(session, MessageEvent) == 3
+  assert await _count(session, LedgerEntry) == 3
+  assert await _balance(session, tenant) == 1_000 - 9
+
+
+async def test_concurrent_duplicate_batches_charge_once(
+  client: AsyncClient, session: AsyncSession
+) -> None:
+  tenant = await _create_tenant(session, balance_cents=1_000)
+
+  responses = await asyncio.gather(
+    *(_send_batch(client, _items(3), idempotency_key="racing-batch") for _ in range(5))
+  )
+
+  assert {response.status_code for response in responses} == {202}
+  assert len({response.json()["batch_id"] for response in responses}) == 1
+  assert (
+    len({tuple(message["id"] for message in response.json()["messages"]) for response in responses})
+    == 1
+  )
+  assert await _count(session, Message) == 3
+  assert await _count(session, MessageEvent) == 3
+  assert await _count(session, LedgerEntry) == 3
+  assert await _balance(session, tenant) == 1_000 - 9
