@@ -2,11 +2,11 @@ import asyncio
 import time
 
 import pytest
-from httpx import ASGITransport, AsyncClient
-
 from app import store
 from app.main import app
 from app.settings import get_settings
+from httpx import ASGITransport, AsyncClient
+
 
 def make_client() -> AsyncClient:
   return AsyncClient(transport=ASGITransport(app=app), base_url="http://carrier.test")

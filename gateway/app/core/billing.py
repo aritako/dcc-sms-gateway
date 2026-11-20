@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import update, insert
+from sqlalchemy import insert, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import LedgerEntry, LedgerKind, Tenant

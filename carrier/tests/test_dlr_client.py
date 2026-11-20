@@ -5,7 +5,6 @@ import re
 from datetime import UTC, datetime
 
 import httpx
-
 from app.dlr.client import GatewayDLRClient
 from app.dlr.model import DeliveryReceiptPayload
 
@@ -26,9 +25,9 @@ async def test_receipt_verifies_against_a_real_http_receiver() -> None:
 
   async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     raw_headers = await reader.readuntil(b"\r\n\r\n")
-    length = int(re.search(rb"content-length: (\d+)", raw_headers, re.I).group(1))
+    length = int(re.search(rb"content-length: (\d+)", raw_headers, re.IGNORECASE).group(1))
     body = await reader.readexactly(length)
-    header = re.search(rb"x-signature: ([0-9a-f]+)", raw_headers, re.I)
+    header = re.search(rb"x-signature: ([0-9a-f]+)", raw_headers, re.IGNORECASE)
     received.append((body, header.group(1).decode()))
     writer.write(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
     await writer.drain()

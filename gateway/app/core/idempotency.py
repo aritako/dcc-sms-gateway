@@ -12,13 +12,7 @@ from app.db.models import IdempotencyKey
 
 
 class IdempotencyService:
-  """Reserve, replay and complete one response per (tenant, Idempotency-Key).
-
-  The reservation is the first write of a send: concurrent duplicates block on
-  the primary key until the winner commits, then replay it. Only 2xx responses
-  are completed (there is no TTL cleanup yet); a failed send rolls its
-  reservation back, so the client can retry the same key after fixing the cause.
-  """
+  """Reserve, replay and complete one response per (tenant, Idempotency-Key)."""
 
   def __init__(self, db: AsyncSession) -> None:
     self.db = db

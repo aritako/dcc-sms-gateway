@@ -4,6 +4,7 @@ from typing import Any
 from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
   """Runtime configuration, read from the environment (or a local .env)."""
 
