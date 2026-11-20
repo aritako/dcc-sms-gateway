@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from psycopg import sql
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncSession
 
 GATEWAY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,7 +26,7 @@ os.environ["REDIS_URL"] = TEST_REDIS_URL
 os.environ["DLR_SECRET"] = "test-dlr-secret"
 os.environ["ADMIN_API_KEY"] = "test-admin-key"
 
-from app.db.database import dispose_engine, get_engine  # noqa: E402
+from app.db.database import dispose_engine, get_engine, get_session  # noqa: E402
 from app.db.redis import close_redis, get_redis  # noqa: E402
 from app.main import app  # noqa: E402
 from app.settings import get_settings  # noqa: E402
@@ -93,6 +94,13 @@ async def client() -> AsyncIterator[AsyncClient]:
     transport=ASGITransport(app=app), base_url="http://gateway.test"
   ) as client:
     yield client
+
+
+@pytest.fixture
+async def session() -> AsyncIterator[AsyncSession]:
+  """Session for arranging data or asserting on the database."""
+  async for session in get_session():
+    yield session
 
 
 class FakeCarrier:

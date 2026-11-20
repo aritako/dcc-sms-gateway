@@ -1,27 +1,23 @@
 import asyncio
 from collections import Counter
-from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from uuid import UUID
 
 import pytest
+from helpers import create_tenant, send_message
 from httpx import AsyncClient, Response
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_session
 from app.db.models import (
-  ApiKey,
   IdempotencyKey,
   LedgerEntry,
   LedgerKind,
   Message,
   MessageEvent,
   MessageStatus,
-  Price,
   Tenant,
 )
-from app.security import hash_api_key
 
 API_KEY = "dcc_test_api_key"
 MESSAGE = {"to": "+8801712345678", "from": "ACME", "text": "hello"}
@@ -29,53 +25,8 @@ SEND_PATH = "/v1/messages"
 
 
 @pytest.fixture
-async def session() -> AsyncIterator[AsyncSession]:
-  async for session in get_session():
-    yield session
-
-
-async def _create_tenant(
-  session: AsyncSession,
-  *,
-  name: str = "Test Tenant",
-  api_key: str = API_KEY,
-  balance_cents: int = 10_000,
-) -> Tenant:
-  tenant = Tenant(
-    name=name,
-    opening_balance_cents=balance_cents,
-    balance_cents=balance_cents,
-  )
-  session.add(tenant)
-  await session.flush()
-  session.add(ApiKey(tenant_id=tenant.id, key_hash=hash_api_key(api_key)))
-  # "hello" is one GSM-7 segment, so every send in this file costs 3 cents.
-  if await session.scalar(select(Price).where(Price.prefix == "+880")) is None:
-    session.add(Price(prefix="+880", price_per_segment_cents=3))
-  await session.commit()
-  return tenant
-
-
-@pytest.fixture
 async def tenant(session: AsyncSession) -> Tenant:
-  return await _create_tenant(session)
-
-
-async def _send(
-  client: AsyncClient,
-  *,
-  key: str | None = API_KEY,
-  idempotency_key: str | None = None,
-  **overrides: object,
-) -> Response:
-  headers = {"X-API-Key": key} if key is not None else {}
-  if idempotency_key is not None:
-    headers["Idempotency-Key"] = idempotency_key
-  return await client.post(
-    SEND_PATH,
-    json={**MESSAGE, **overrides},
-    headers=headers,
-  )
+  return await create_tenant(session)
 
 
 async def _count(session: AsyncSession, model: type) -> int:
@@ -115,14 +66,14 @@ async def test_missing_key_is_unauthorized(client: AsyncClient) -> None:
 
 
 async def test_unknown_key_is_unauthorized(client: AsyncClient, tenant: Tenant) -> None:
-  response = await _send(client, key="not-a-real-key")
+  response = await send_message(client, key="not-a-real-key")
 
   assert response.status_code == 401
   assert response.json() == {"error": "UNAUTHORIZED"}
 
 
 async def test_valid_send_returns_202_and_the_quote(client: AsyncClient, tenant: Tenant) -> None:
-  response = await _send(client, client_ref="order-42")
+  response = await send_message(client, client_ref="order-42")
 
   assert response.status_code == 202
   body = response.json()
@@ -142,7 +93,7 @@ async def test_valid_send_returns_202_and_the_quote(client: AsyncClient, tenant:
 async def test_send_writes_message_event_and_charge(
   client: AsyncClient, session: AsyncSession, tenant: Tenant
 ) -> None:
-  body = (await _send(client)).json()
+  body = (await send_message(client)).json()
 
   message = await session.get(Message, UUID(body["id"]))
   assert message is not None
@@ -182,7 +133,7 @@ async def test_invalid_payload_is_422_and_writes_nothing(
   override: dict[str, str],
   field: str,
 ) -> None:
-  response = await _send(client, **override)
+  response = await send_message(client, **override)
 
   assert response.status_code == 422
   assert any(field in error["loc"] for error in response.json()["detail"])
@@ -195,7 +146,7 @@ async def test_invalid_payload_is_422_and_writes_nothing(
 async def test_unknown_destination_is_422_and_writes_nothing(
   client: AsyncClient, session: AsyncSession, tenant: Tenant
 ) -> None:
-  response = await _send(client, to="+15551234567")
+  response = await send_message(client, to="+15551234567")
 
   assert response.status_code == 422
   assert response.json() == {"error": "UNSUPPORTED_DESTINATION"}
@@ -208,9 +159,9 @@ async def test_unknown_destination_is_422_and_writes_nothing(
 async def test_insufficient_balance_is_402_and_writes_nothing(
   client: AsyncClient, session: AsyncSession
 ) -> None:
-  tenant = await _create_tenant(session, balance_cents=2)
+  tenant = await create_tenant(session, balance_cents=2)
 
-  response = await _send(client)
+  response = await send_message(client)
 
   assert response.status_code == 402
   assert response.json() == {"error": "INSUFFICIENT_BALANCE"}
@@ -221,9 +172,9 @@ async def test_insufficient_balance_is_402_and_writes_nothing(
 
 
 async def test_concurrent_sends_cannot_overdraw(client: AsyncClient, session: AsyncSession) -> None:
-  tenant = await _create_tenant(session, balance_cents=30)  # exactly 10 x 3 cents
+  tenant = await create_tenant(session, balance_cents=30)  # exactly 10 x 3 cents
 
-  responses = await asyncio.gather(*(_send(client) for _ in range(50)))
+  responses = await asyncio.gather(*(send_message(client) for _ in range(50)))
 
   codes = Counter(response.status_code for response in responses)
   assert codes == {202: 10, 402: 40}
@@ -238,8 +189,8 @@ async def test_concurrent_sends_cannot_overdraw(client: AsyncClient, session: As
 async def test_same_key_and_body_replays_and_writes_nothing(
   client: AsyncClient, session: AsyncSession, tenant: Tenant
 ) -> None:
-  first = await _send(client, idempotency_key="same-key")
-  second = await _send(client, idempotency_key="same-key")
+  first = await send_message(client, idempotency_key="same-key")
+  second = await send_message(client, idempotency_key="same-key")
 
   assert first.status_code == 202
   assert second.status_code == 202
@@ -253,7 +204,7 @@ async def test_same_key_and_body_replays_and_writes_nothing(
 async def test_stored_snapshot_has_status_and_body(
   client: AsyncClient, session: AsyncSession, tenant: Tenant
 ) -> None:
-  response = await _send(client, idempotency_key="snapshot-key")
+  response = await send_message(client, idempotency_key="snapshot-key")
 
   stored = await session.get(IdempotencyKey, (tenant.id, "snapshot-key"))
   assert stored is not None
@@ -264,7 +215,7 @@ async def test_stored_snapshot_has_status_and_body(
 async def test_oversized_idempotency_key_is_422_and_writes_nothing(
   client: AsyncClient, session: AsyncSession, tenant: Tenant
 ) -> None:
-  response = await _send(client, idempotency_key="k" * 256)
+  response = await send_message(client, idempotency_key="k" * 256)
 
   assert response.status_code == 422
   assert await _count(session, Message) == 0
@@ -276,7 +227,7 @@ async def test_oversized_idempotency_key_is_422_and_writes_nothing(
 async def test_empty_idempotency_key_is_422_and_writes_nothing(
   client: AsyncClient, session: AsyncSession, tenant: Tenant
 ) -> None:
-  response = await _send(client, idempotency_key="")
+  response = await send_message(client, idempotency_key="")
 
   assert response.status_code == 422
   assert await _count(session, Message) == 0
@@ -288,8 +239,8 @@ async def test_empty_idempotency_key_is_422_and_writes_nothing(
 async def test_same_key_with_different_body_is_409_and_writes_nothing(
   client: AsyncClient, session: AsyncSession, tenant: Tenant
 ) -> None:
-  first = await _send(client, idempotency_key="reused-key")
-  second = await _send(client, idempotency_key="reused-key", text="different")
+  first = await send_message(client, idempotency_key="reused-key")
+  second = await send_message(client, idempotency_key="reused-key", text="different")
 
   assert first.status_code == 202
   assert second.status_code == 409
@@ -304,7 +255,7 @@ async def test_concurrent_duplicates_create_one_message_and_one_charge(
   client: AsyncClient, session: AsyncSession, tenant: Tenant
 ) -> None:
   responses = await asyncio.gather(
-    *(_send(client, idempotency_key="racing-key") for _ in range(10))
+    *(send_message(client, idempotency_key="racing-key") for _ in range(10))
   )
 
   assert {response.status_code for response in responses} == {202}
@@ -318,9 +269,11 @@ async def test_concurrent_duplicates_create_one_message_and_one_charge(
 async def test_concurrent_duplicates_replay_even_when_the_balance_runs_out(
   client: AsyncClient, session: AsyncSession
 ) -> None:
-  tenant = await _create_tenant(session, balance_cents=3)  # room for exactly one send
+  tenant = await create_tenant(session, balance_cents=3)  # room for exactly one send
 
-  responses = await asyncio.gather(*(_send(client, idempotency_key="last-cents") for _ in range(5)))
+  responses = await asyncio.gather(
+    *(send_message(client, idempotency_key="last-cents") for _ in range(5))
+  )
 
   assert {response.status_code for response in responses} == {202}
   assert len({response.json()["id"] for response in responses}) == 1
@@ -331,10 +284,10 @@ async def test_concurrent_duplicates_replay_even_when_the_balance_runs_out(
 async def test_same_key_is_independent_per_tenant(
   client: AsyncClient, session: AsyncSession, tenant: Tenant
 ) -> None:
-  other = await _create_tenant(session, name="Other Tenant", api_key="other-key")
+  other = await create_tenant(session, name="Other Tenant", api_key="other-key")
 
-  first = await _send(client, idempotency_key="shared-key")
-  second = await _send(client, key="other-key", idempotency_key="shared-key")
+  first = await send_message(client, idempotency_key="shared-key")
+  second = await send_message(client, key="other-key", idempotency_key="shared-key")
 
   assert first.status_code == 202
   assert second.status_code == 202
@@ -349,9 +302,9 @@ async def test_same_key_is_independent_per_tenant(
 async def test_402_is_not_stored_and_the_same_key_works_after_top_up(
   client: AsyncClient, session: AsyncSession
 ) -> None:
-  tenant = await _create_tenant(session, balance_cents=2)
+  tenant = await create_tenant(session, balance_cents=2)
 
-  rejected = await _send(client, idempotency_key="retry-key")
+  rejected = await send_message(client, idempotency_key="retry-key")
   assert rejected.status_code == 402
   assert await _count(session, Message) == 0
   assert await _count(session, LedgerEntry) == 0
@@ -359,7 +312,7 @@ async def test_402_is_not_stored_and_the_same_key_works_after_top_up(
 
   await _top_up(session, tenant, 998)
 
-  accepted = await _send(client, idempotency_key="retry-key")
+  accepted = await send_message(client, idempotency_key="retry-key")
   assert accepted.status_code == 202
   assert await _count(session, Message) == 1
   # The top-up CREDIT and the send CHARGE.
@@ -405,7 +358,7 @@ async def _assert_nothing_written(
 async def test_batch_of_1000_is_accepted_and_charged_per_message(
   client: AsyncClient, session: AsyncSession
 ) -> None:
-  tenant = await _create_tenant(session, balance_cents=1_000_000)
+  tenant = await create_tenant(session, balance_cents=1_000_000)
 
   response = await _send_batch(client, _items(1_000))
 
@@ -453,7 +406,7 @@ async def test_batch_of_1000_is_accepted_and_charged_per_message(
 async def test_insufficient_aggregate_balance_is_402_and_writes_nothing(
   client: AsyncClient, session: AsyncSession
 ) -> None:
-  tenant = await _create_tenant(session, balance_cents=29)  # 10 messages need 30
+  tenant = await create_tenant(session, balance_cents=29)  # 10 messages need 30
 
   response = await _send_batch(client, _items(10), idempotency_key="broke-batch")
 
@@ -466,7 +419,7 @@ async def test_insufficient_aggregate_balance_is_402_and_writes_nothing(
 async def test_empty_batch_is_422_and_writes_nothing(
   client: AsyncClient, session: AsyncSession
 ) -> None:
-  tenant = await _create_tenant(session)
+  tenant = await create_tenant(session)
 
   response = await _send_batch(client, [])
 
@@ -478,7 +431,7 @@ async def test_empty_batch_is_422_and_writes_nothing(
 async def test_batch_of_1001_is_422_and_writes_nothing(
   client: AsyncClient, session: AsyncSession
 ) -> None:
-  tenant = await _create_tenant(session)
+  tenant = await create_tenant(session)
 
   response = await _send_batch(client, _items(1_001))
 
@@ -502,7 +455,7 @@ async def test_one_invalid_item_is_422_and_writes_nothing(
   override: dict[str, str],
   field: str,
 ) -> None:
-  tenant = await _create_tenant(session)
+  tenant = await create_tenant(session)
   items = _items(5)
   items[3] = {**MESSAGE, **override}
 
@@ -522,7 +475,7 @@ async def test_one_invalid_item_is_422_and_writes_nothing(
 async def test_replay_returns_the_same_ids_and_charges_once(
   client: AsyncClient, session: AsyncSession
 ) -> None:
-  tenant = await _create_tenant(session, balance_cents=1_000)
+  tenant = await create_tenant(session, balance_cents=1_000)
 
   first = await _send_batch(client, _items(3), idempotency_key="batch-key")
   second = await _send_batch(client, _items(3), idempotency_key="batch-key")
@@ -539,7 +492,7 @@ async def test_replay_returns_the_same_ids_and_charges_once(
 async def test_concurrent_duplicate_batches_charge_once(
   client: AsyncClient, session: AsyncSession
 ) -> None:
-  tenant = await _create_tenant(session, balance_cents=1_000)
+  tenant = await create_tenant(session, balance_cents=1_000)
 
   responses = await asyncio.gather(
     *(_send_batch(client, _items(3), idempotency_key="racing-batch") for _ in range(5))
