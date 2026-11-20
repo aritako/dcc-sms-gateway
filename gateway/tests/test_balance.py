@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import uuid4
 
 import pytest
-from helpers import create_tenant
+from helpers import ADMIN_HEADERS, create_tenant
 from httpx import AsyncClient, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -84,3 +84,61 @@ async def test_balance_is_tenant_scoped(
   assert other["balance"] == 500
   assert other["opening_balance"] == 500
   assert other["ledger_sum"] == 0
+
+
+async def test_admin_can_read_another_tenants_balance(
+  client: AsyncClient, session: AsyncSession, tenant: Tenant
+) -> None:
+  other = await create_tenant(session, name="Other", api_key="other-key", balance_cents=500)
+
+  response = await client.get(
+    BALANCE_PATH, params={"tenant_id": str(other.id)}, headers=ADMIN_HEADERS
+  )
+
+  assert response.status_code == 200
+  body = response.json()
+  assert body["balance"] == 500
+  assert body["opening_balance"] == 500
+  assert body["ledger_sum"] == 0
+
+
+async def test_admin_balance_requires_a_tenant(client: AsyncClient, tenant: Tenant) -> None:
+  response = await client.get(BALANCE_PATH, headers=ADMIN_HEADERS)
+
+  assert response.status_code == 422
+  assert response.json() == {"error": "TENANT_ID_REQUIRED"}
+
+
+async def test_admin_balance_for_an_unknown_tenant_is_404(
+  client: AsyncClient, tenant: Tenant
+) -> None:
+  response = await client.get(
+    BALANCE_PATH, params={"tenant_id": str(uuid4())}, headers=ADMIN_HEADERS
+  )
+
+  assert response.status_code == 404
+  assert response.json() == {"error": "NOT_FOUND"}
+
+
+async def test_a_tenant_key_cannot_pass_tenant_id_to_balance(
+  client: AsyncClient, tenant: Tenant
+) -> None:
+  response = await client.get(
+    BALANCE_PATH,
+    params={"tenant_id": str(tenant.id)},
+    headers={"X-API-Key": API_KEY},
+  )
+
+  assert response.status_code == 403
+  assert response.json() == {"error": "FORBIDDEN"}
+
+
+async def test_a_wrong_admin_key_is_401_even_with_a_valid_tenant_key(
+  client: AsyncClient, tenant: Tenant
+) -> None:
+  response = await client.get(
+    BALANCE_PATH, headers={"X-API-Key": API_KEY, "X-Admin-Key": "wrong-admin-key"}
+  )
+
+  assert response.status_code == 401
+  assert response.json() == {"error": "UNAUTHORIZED"}
