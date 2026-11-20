@@ -320,9 +320,7 @@ async def test_concurrent_duplicates_replay_even_when_the_balance_runs_out(
 ) -> None:
   tenant = await _create_tenant(session, balance_cents=3)  # room for exactly one send
 
-  responses = await asyncio.gather(
-    *(_send(client, idempotency_key="last-cents") for _ in range(5))
-  )
+  responses = await asyncio.gather(*(_send(client, idempotency_key="last-cents") for _ in range(5)))
 
   assert {response.status_code for response in responses} == {202}
   assert len({response.json()["id"] for response in responses}) == 1
@@ -371,3 +369,95 @@ async def test_402_is_not_stored_and_the_same_key_works_after_top_up(
     select(func.sum(LedgerEntry.amount_cents)).where(LedgerEntry.tenant_id == tenant.id)
   )
   assert ledger_sum == 995
+
+
+# BATCH MESSAGING TESTS
+
+BATCH_PATH = "/v1/messages/batch"
+
+
+def _items(count: int) -> list[dict[str, str]]:
+  return [{**MESSAGE, "client_ref": f"ref-{index}"} for index in range(count)]
+
+
+async def _send_batch(
+  client: AsyncClient,
+  items: list[dict[str, str]],
+  *,
+  key: str | None = API_KEY,
+  idempotency_key: str | None = None,
+) -> Response:
+  headers = {"X-API-Key": key} if key is not None else {}
+  if idempotency_key is not None:
+    headers["Idempotency-Key"] = idempotency_key
+  return await client.post(BATCH_PATH, json={"messages": items}, headers=headers)
+
+
+async def _assert_nothing_written(
+  session: AsyncSession, tenant: Tenant, balance_cents: int
+) -> None:
+  assert await _count(session, Message) == 0
+  assert await _count(session, MessageEvent) == 0
+  assert await _count(session, LedgerEntry) == 0
+  assert await _balance(session, tenant) == balance_cents
+
+
+async def test_batch_of_1000_is_accepted_and_charged_per_message(
+  client: AsyncClient, session: AsyncSession
+) -> None:
+  tenant = await _create_tenant(session, balance_cents=1_000_000)
+
+  response = await _send_batch(client, _items(1_000))
+
+  assert response.status_code == 202
+  body = response.json()
+  assert body["total_price"] == 3_000
+  assert body["currency"] == "USD"
+  UUID(body["batch_id"])
+  assert len(body["messages"]) == 1_000
+  assert len({m["id"] for m in body["messages"]}) == 1_000
+  assert body["messages"][0] == {
+    "id": body["messages"][0]["id"],
+    "status": "ACCEPTED",
+    "client_ref": "ref-0",
+    "encoding": "GSM7",
+    "segments": 1,
+    "price_per_segment": 3,
+    "total_price": 3,
+  }
+  assert body["messages"][-1]["client_ref"] == "ref-999"
+
+  assert await _count(session, Message) == 1_000
+  assert await _count(session, MessageEvent) == 1_000
+  assert await _count(session, LedgerEntry) == 1_000
+  batch_ids = (await session.scalars(select(Message.batch_id).distinct())).all()
+  assert [str(batch_id) for batch_id in batch_ids] == [body["batch_id"]]
+
+  balance = await _balance(session, tenant)
+  ledger_sum = await session.scalar(
+    select(func.sum(LedgerEntry.amount_cents)).where(LedgerEntry.tenant_id == tenant.id)
+  )
+  assert balance == 1_000_000 - 3_000
+  assert balance == tenant.opening_balance_cents + ledger_sum
+  # One CHARGE row per message; the last row carries the tenant's final balance.
+  charges = (
+    await session.scalars(
+      select(LedgerEntry.amount_cents).where(LedgerEntry.kind == LedgerKind.CHARGE)
+    )
+  ).all()
+  assert charges == [-3] * 1_000
+  lowest = await session.scalar(select(func.min(LedgerEntry.balance_after_cents)))
+  assert lowest == balance
+
+
+async def test_insufficient_aggregate_balance_is_402_and_writes_nothing(
+  client: AsyncClient, session: AsyncSession
+) -> None:
+  tenant = await _create_tenant(session, balance_cents=29)  # 10 messages need 30
+
+  response = await _send_batch(client, _items(10), idempotency_key="broke-batch")
+
+  assert response.status_code == 402
+  assert response.json() == {"error": "INSUFFICIENT_BALANCE"}
+  await _assert_nothing_written(session, tenant, 29)
+  assert await session.get(IdempotencyKey, (tenant.id, "broke-batch")) is None
