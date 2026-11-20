@@ -8,8 +8,8 @@ from app.core.idempotency import IdempotencyService
 from app.core.quote import UnknownDestination
 from app.db.database import get_session
 
-from .handler import MessagesHandler
-from .models import MessagesRequest, MessagesResponse, QuoteRequest, QuoteResponse
+from .handler import MessagesHandler, InvalidBatch
+from .models import MessagesRequest, MessagesResponse, QuoteRequest, QuoteResponse, MAX_BATCH_SIZE
 
 router = APIRouter()
 
@@ -68,6 +68,69 @@ async def receive_messages(
   await db.commit()
   return response
 
+@router.post("/batch", response_model=list[MessagesResponse], status_code=202)
+async def receive_batch_messages(
+  payload: list[MessagesRequest],
+  request: Request,
+  db: AsyncSession = Depends(get_session),
+  api_key: str | None = Header(default=None, alias="X-API-Key"),
+  idempotency_key: str | None = Header(
+    default=None, alias="Idempotency-Key", min_length=1, max_length=255
+  ),
+) -> MessagesResponse | JSONResponse:
+  handler = MessagesHandler(db)
+
+  tenant = await tenant_for_api_key(db, api_key or "")
+  if tenant is None:
+    return handler.error_response(401, "UNAUTHORIZED")
+
+  if len(payload) < 1:
+    return handler.error_response(422, "BATCH_EMPTY")
+  elif len(payload) > MAX_BATCH_SIZE:
+    return handler.error_response(422, "BATCH_TOO_LARGE")
+
+  try:
+    items = handler.parse_batch(payload.messages)
+  except InvalidBatch as error:
+    return handler.invalid_batch_response(error.errors)  
+  
+  idempotencyService = IdempotencyService(db)
+  fingerprint: str | None = None
+  if idempotency_key is not None:
+    fingerprint = idempotencyService.request_hash(
+      request.method, request.url.path, {"messages" : [item.model_dump(by_alias=True) for item in items]}
+    )
+    stored = await idempotencyService.claim(tenant.id, idempotency_key, fingerprint)
+    if stored is not None:
+      return idempotencyService.replay(stored, fingerprint)
+
+  try:
+    message, quote = await handler.accept_batch(tenant, payload)
+  except UnknownDestination:
+    await db.rollback()
+    return handler.error_response(422, "UNSUPPORTED_DESTINATION")
+  except InsufficientBalance:
+    await db.rollback()
+    return handler.error_response(402, "INSUFFICIENT_BALANCE")
+
+  response = MessagesResponse(
+    id=message.id,
+    status=message.status,
+    client_ref=message.client_ref,
+    encoding=quote.encoding,
+    segments=quote.segments,
+    price_per_segment=quote.price_per_segment_cents,
+    total_price=quote.total_price_cents,
+    currency=quote.currency,
+  )
+
+  if idempotency_key is not None:
+    await idempotencyService.complete(
+      tenant.id, idempotency_key, 202, response.model_dump(mode="json")
+    )
+
+  await db.commit()
+  return response
 
 @router.post("/quote", response_model=QuoteResponse)
 async def quote(

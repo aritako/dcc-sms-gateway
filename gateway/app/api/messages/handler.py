@@ -1,8 +1,10 @@
 import secrets
 from uuid import UUID, uuid7
 
+from dataclasses import dataclass
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import ValidationError
 
 from app.api.messages.models import MessagesRequest
 from app.core.billing import BillingService
@@ -11,6 +13,20 @@ from app.core.quote import Quote, QuoteService
 from app.db.models import Message, MessageEvent, MessageStatus, Tenant
 from app.settings import get_settings
 
+
+@dataclass(frozen=True, slots=True)
+class ItemError:
+  index: int
+  field: str
+  code: str
+  message: str
+
+class InvalidBatch(Exception):
+  """At least one batch item is invalid."""
+
+  def __init__(self, errors: list[ItemError]) -> None:
+    super().__init__(f"{len(errors)} invalid batch item(s)")
+    self.errors = errors
 
 class MessagesHandler:
   def __init__(self, db: AsyncSession) -> None:
@@ -58,6 +74,31 @@ class MessagesHandler:
       tenant_id=tenant.id, message_id=message.id, amount_cents=quote.total_price_cents
     )
     return message, quote
-
+  
+  def parse_batch(self, raw_items: list[dict[str, Any]]) -> list[MessagesRequest]:
+    """Validate every item with the single-send rules; report all failures by index."""
+    items: list[MessagesRequest] = []
+    errors: list[ItemError] = []
+    for index, raw in enumerate(raw_items):
+      try:
+        items.append(MessagesRequest.model_validate(raw))
+      except ValidationError as error:
+        errors.extend(
+          ItemError(
+            index=index,
+            field=".".join(str(part) for part in detail["loc"]),
+            code=detail["type"].upper(),
+            message=detail["msg"],
+          )
+          for detail in error.errors()
+        )
+    if errors:
+      raise InvalidBatch(errors)
+    return items
+  
+  def accept_batch(self, tenant: Tenant, batch: list[MessagesRequest]):
+    pass
+  
   def error_response(self, status_code: int, code: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"error": code})
+
