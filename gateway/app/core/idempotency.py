@@ -38,9 +38,7 @@ class IdempotencyService:
     assert stored.response_status is not None and stored.response_body is not None
     return JSONResponse(status_code=stored.response_status, content=stored.response_body)
 
-  async def claim(
-    self, tenant_id: uuid.UUID, key: str, request_hash: str
-  ) -> IdempotencyKey | None:
+  async def claim(self, tenant_id: uuid.UUID, key: str, request_hash: str) -> IdempotencyKey | None:
     """Reserve the key (returns None), or return the row already stored for it.
 
     Must be the first write of the transaction: a duplicate blocks on the primary

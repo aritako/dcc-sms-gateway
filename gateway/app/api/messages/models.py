@@ -13,6 +13,7 @@ SENDER_ID_PATTERN = r"^[A-Za-z0-9]{1,11}$"
 
 MAX_BATCH_SIZE = 1_000
 
+
 class MessagesRequest(BaseModel):
   to: str = Field(pattern=E164_PATTERN)
   from_: str = Field(alias="from", pattern=SENDER_ID_PATTERN)
@@ -44,6 +45,7 @@ class QuoteResponse(BaseModel):
   price_per_segment: int
   total_price: int
   currency: str
+
 
 class BatchRequest(BaseModel):
   messages: list[dict[str, Any]]

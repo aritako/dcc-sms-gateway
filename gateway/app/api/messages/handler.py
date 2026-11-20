@@ -24,12 +24,14 @@ class ItemError:
   code: str
   message: str
 
+
 class InvalidBatch(Exception):
   """At least one batch item is invalid."""
 
   def __init__(self, errors: list[ItemError]) -> None:
     super().__init__(f"{len(errors)} invalid batch item(s)")
     self.errors = errors
+
 
 class MessagesHandler:
   def __init__(self, db: AsyncSession) -> None:
@@ -77,7 +79,7 @@ class MessagesHandler:
       tenant_id=tenant.id, message_id=message.id, amount_cents=quote.total_price_cents
     )
     return message, quote
-  
+
   def parse_batch(self, raw_items: list[dict[str, Any]]) -> list[MessagesRequest]:
     """Validate every item with the single-send rules; report all failures by index."""
     items: list[MessagesRequest] = []
@@ -98,7 +100,7 @@ class MessagesHandler:
     if errors:
       raise InvalidBatch(errors)
     return items
-  
+
   async def accept_batch(self, tenant: Tenant, items: list[MessagesRequest]) -> BatchResponse:
     """Quote every item, then write all messages, events and charges.
 
@@ -173,7 +175,6 @@ class MessagesHandler:
       status_code=422,
       content={"error": "INVALID_BATCH_ITEM", "errors": [asdict(error) for error in errors]},
     )
-  
+
   def error_response(self, status_code: int, code: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"error": code})
-

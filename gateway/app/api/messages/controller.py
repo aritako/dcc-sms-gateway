@@ -76,6 +76,7 @@ async def receive_messages(
   await db.commit()
   return response
 
+
 @router.post("/batch", response_model=BatchResponse, status_code=202)
 async def receive_batch_messages(
   payload: BatchRequest,
@@ -85,28 +86,30 @@ async def receive_batch_messages(
   idempotency_key: str | None = Header(
     default=None, alias="Idempotency-Key", min_length=1, max_length=255
   ),
-) -> MessagesResponse | JSONResponse:
+) -> BatchResponse | JSONResponse:
   handler = MessagesHandler(db)
 
   tenant = await tenant_for_api_key(db, api_key or "")
   if tenant is None:
     return handler.error_response(401, "UNAUTHORIZED")
 
-  if len(payload) < 1:
+  if len(payload.messages) < 1:
     return handler.error_response(422, "BATCH_EMPTY")
-  elif len(payload) > MAX_BATCH_SIZE:
+  elif len(payload.messages) > MAX_BATCH_SIZE:
     return handler.error_response(422, "BATCH_TOO_LARGE")
 
   try:
     items = handler.parse_batch(payload.messages)
   except InvalidBatch as error:
-    return handler.invalid_batch_response(error.errors)  
-  
+    return handler.invalid_batch_response(error.errors)
+
   idempotencyService = IdempotencyService(db)
   fingerprint: str | None = None
   if idempotency_key is not None:
     fingerprint = idempotencyService.request_hash(
-      request.method, request.url.path, {"messages" : [item.model_dump(by_alias=True) for item in items]}
+      request.method,
+      request.url.path,
+      {"messages": [item.model_dump(by_alias=True) for item in items]},
     )
     stored = await idempotencyService.claim(tenant.id, idempotency_key, fingerprint)
     if stored is not None:
@@ -128,6 +131,7 @@ async def receive_batch_messages(
 
   await db.commit()
   return response
+
 
 @router.post("/quote", response_model=QuoteResponse)
 async def quote(

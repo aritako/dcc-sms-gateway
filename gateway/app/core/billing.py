@@ -16,9 +16,13 @@ class BillingService:
 
   async def charge(self, tenant_id: uuid.UUID, message_id: uuid.UUID, amount_cents: int) -> int:
     return await self.charge_many(tenant_id=tenant_id, charges=[(message_id, amount_cents)])
-  
-  async def charge_many(self, tenant_id : uuid.UUID, charges: list[tuple[uuid.UUID, int]]):
-    """Update balances in batch for a Tenant. Needs to be called after message is inserted"""
+
+  async def charge_many(self, tenant_id: uuid.UUID, charges: list[tuple[uuid.UUID, int]]) -> int:
+    """Debit every charge in one aggregate update and write one CHARGE row each.
+
+    Messages must already be inserted: the ledger rows reference them.
+    The caller commits.
+    """
     if not charges or any(amount <= 0 for _, amount in charges):
       raise ValueError("charges must be non-empty and every amount positive")
     total = sum(amount for _, amount in charges)
