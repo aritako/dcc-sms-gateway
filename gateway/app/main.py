@@ -8,7 +8,9 @@ from sqlalchemy import text
 
 from app.api.balance import controller as balance
 from app.api.errors import ApiError
+from app.api.ledger import controller as ledger
 from app.api.messages import controller
+from app.api.stats import controller as stats
 from app.db.database import dispose_engine, get_engine
 from app.db.redis import close_redis, get_redis
 from app.settings import get_settings
@@ -40,6 +42,8 @@ async def api_error_handler(_request: Request, error: ApiError) -> JSONResponse:
 v1_router = APIRouter(prefix="/v1", tags=["v1"])
 v1_router.include_router(controller.router, prefix="/messages", tags=["messages"])
 v1_router.include_router(balance.router, tags=["balance"])
+v1_router.include_router(ledger.router, tags=["ledger"])
+v1_router.include_router(stats.router, tags=["stats"])
 app.include_router(v1_router)
 
 
