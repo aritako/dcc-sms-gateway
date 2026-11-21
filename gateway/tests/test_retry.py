@@ -512,3 +512,56 @@ async def test_fail_never_overwrites_an_accepted_message(client, session) -> Non
   assert accepted.billing_state == BillingState.NORMAL
   assert await refunds(session) == []
   assert await tenant_balance(session) == 9_997
+
+
+async def test_accepted_attempt_evidence_blocks_failure_and_refund(client, session) -> None:
+  await create_tenant(session)
+  message_id = (await send_message(client)).json()["id"]
+  dispatcher = make_dispatcher(None, max_submit_attempts=1)
+
+  # A 200 was recorded but its SUBMITTED transaction was lost; the message is
+  # still QUEUED even though the carrier accepted it.
+  await dispatcher.claim()
+  now = datetime.now(UTC)
+  await dispatcher.record_attempt(
+    UUID(message_id), SubmitOutcome.ACCEPTED, 200, None, now, now
+  )
+  await dispatcher.retry_or_fail(UUID(message_id))
+
+  assert await dispatcher.fail(UUID(message_id), ambiguous=False) is False
+  waiting = await fetch(session, message_id)
+  assert waiting.status == MessageStatus.QUEUED
+  assert waiting.next_attempt_at is not None  # recover the carrier id instead
+  assert await refunds(session) == []
+  assert await tenant_balance(session) == 9_997
+
+
+async def test_200_without_carrier_id_is_ambiguous_and_enters_the_retry_budget(
+  client, session
+) -> None:
+  await create_tenant(session)
+  message_id = (await send_message(client)).json()["id"]
+
+  def handler(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(200, json={})
+
+  async with carrier_client(handler) as carrier:
+    dispatcher = make_dispatcher(carrier, max_submit_attempts=2)
+    claimed = await dispatcher.claim()
+    await dispatcher.dispatch(claimed[0])
+
+    waiting = await fetch(session, message_id)
+    assert waiting.status == MessageStatus.QUEUED
+    assert waiting.next_attempt_at is not None
+
+    await dispatcher.dispatch(claimed[0])
+
+  failed = await fetch(session, message_id)
+  assert failed.status == MessageStatus.FAILED
+  assert failed.billing_state == BillingState.REVIEW
+  assert await refunds(session) == []
+  recorded = await attempts(session, message_id)
+  assert [(row.outcome, row.http_status, row.error) for row in recorded] == [
+    (SubmitOutcome.AMBIGUOUS, 200, "MISSING_CARRIER_ID"),
+    (SubmitOutcome.AMBIGUOUS, 200, "MISSING_CARRIER_ID"),
+  ]

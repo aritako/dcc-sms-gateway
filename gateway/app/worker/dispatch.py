@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 from redis.exceptions import RedisError
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -244,14 +244,12 @@ class Dispatcher:
       )
       if locked is None:
         return
-      attempt_number = (
-        await db.scalar(
-          select(func.coalesce(func.max(SubmitAttempt.attempt_number), 0) + 1).where(
-            SubmitAttempt.message_id == message_id
-          )
+      attempt_number = await db.scalar(
+        select(func.coalesce(func.max(SubmitAttempt.attempt_number), 0) + 1).where(
+          SubmitAttempt.message_id == message_id
         )
-        or 1
       )
+      assert attempt_number is not None  # coalesce(..., 0) + 1 is never null
       db.add(
         SubmitAttempt(
           id=uuid.uuid7(),
@@ -278,6 +276,8 @@ class Dispatcher:
     message for review, because the carrier may have delivered and billed that
     attempt. Only definitive non-acceptance (a permanent rejection or every
     attempt failing at the transport level) refunds the charge exactly once.
+    An ACCEPTED attempt is never failed: the retry budget keeps re-acquiring the
+    carrier id so a lost record_submitted transaction can still settle.
     """
     async with self.sessions() as db:
       outcomes = list(
@@ -291,10 +291,13 @@ class Dispatcher:
         .scalars()
         .all()
       )
-      if len(outcomes) >= self.max_attempts:
+      if len(outcomes) >= self.max_attempts and SubmitOutcome.ACCEPTED not in outcomes:
         ambiguous = any(outcome == SubmitOutcome.AMBIGUOUS for outcome in outcomes)
         await self._fail(db, message_id, ambiguous=ambiguous)
       else:
+        # A missing retry budget also covers an ACCEPTED attempt whose
+        # record_submitted transaction was lost: keep retrying until the same
+        # message_id returns its carrier id, rather than failing an accepted SMS.
         await db.execute(
           update(Message)
           .where(Message.id == message_id, Message.status == MessageStatus.QUEUED)
@@ -320,7 +323,14 @@ class Dispatcher:
     row = (
       await db.execute(
         update(Message)
-        .where(Message.id == message_id, Message.status.in_(CLAIMABLE))
+        .where(
+          Message.id == message_id,
+          Message.status.in_(CLAIMABLE),
+          ~exists().where(
+            SubmitAttempt.message_id == message_id,
+            SubmitAttempt.outcome == SubmitOutcome.ACCEPTED.value,
+          ),
+        )
         .values(
           status=MessageStatus.FAILED,
           final_at=func.coalesce(Message.final_at, func.now()),
@@ -355,7 +365,7 @@ class Dispatcher:
 
     Any DLR parked for this carrier id is reconciled here, in the same transaction:
     its SUBMITTED event is recorded first, then the terminal outcome is applied. A
-    FAILED message keeps its status, refund and timeline; only the carrier id is
+    terminal message keeps its status, refund and timeline; only the carrier id is
     stored as evidence.
     """
     async with self.sessions() as db:
@@ -382,8 +392,9 @@ class Dispatcher:
       ).scalar_one_or_none()
       if carrier is None:
         return
-      if status == MessageStatus.FAILED:
-        # NEVER append SUBMITTED after FAILED: the failed timeline and refund stand.
+      if status not in (*CLAIMABLE, MessageStatus.SUBMITTED):
+        # NEVER append SUBMITTED after a terminal outcome: the timeline and any
+        # refund stand. Parked receipts are still rejected by the DLR sweep.
         await db.commit()
         return
 

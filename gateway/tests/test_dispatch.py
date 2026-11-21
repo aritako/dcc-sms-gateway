@@ -114,7 +114,7 @@ async def test_dispatch_records_submitted_after_a_200(
   ]
 
 
-async def test_dispatch_releases_on_a_non_200(client, session) -> None:
+async def test_dispatch_schedules_a_retry_on_a_non_200(client, session) -> None:
   await create_tenant(session)
   message_id = (await send_message(client)).json()["id"]
   limiter = StubLimiter()
