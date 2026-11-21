@@ -1,8 +1,9 @@
 import asyncio
 import logging
+import random
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from redis.exceptions import RedisError
@@ -10,8 +11,21 @@ from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.dlr import lock_pending_receipts, reconcile_dlr, sweep_parked_dlrs
-from app.db.models import Message, MessageEvent, MessageStatus
+from app.core.billing import BillingService
+from app.core.dlr import (
+  NONTERMINAL_STATUS,
+  lock_pending_receipts,
+  reconcile_dlr,
+  sweep_parked_dlrs,
+)
+from app.db.models import (
+  BillingState,
+  Message,
+  MessageEvent,
+  MessageStatus,
+  SubmitAttempt,
+  SubmitOutcome,
+)
 from app.settings import Settings
 
 from .limiter import CarrierRateLimiter
@@ -23,6 +37,9 @@ CLAIMABLE = (MessageStatus.ACCEPTED, MessageStatus.QUEUED)
 
 # How often the worker looks for parked DLRs whose carrier id has since appeared.
 DLR_SWEEP_INTERVAL_SECONDS = 5.0
+
+# A retry waits at least this fraction of its nominal delay, so jitter never hot-loops.
+MIN_JITTER_RATIO = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +82,9 @@ class Dispatcher:
     self.lease = timedelta(seconds=settings.worker_lease_seconds)
     self.retry_delay = timedelta(seconds=settings.worker_retry_seconds)
     self.claim_size = settings.worker_claim_size
+    self.max_attempts = settings.max_submit_attempts
+    self.backoff_base = settings.retry_backoff_base_seconds
+    self.backoff_cap = settings.retry_backoff_cap_seconds
 
   async def claim(self) -> list[ClaimedMessage]:
     """Lease up to `claim_size` due messages, mark them QUEUED and record the event.
@@ -72,14 +92,16 @@ class Dispatcher:
     One short transaction owns the whole claim: the SELECT takes a pessimistic
     row lock, the UPDATE starts the lease, and the commit drops both the lock and
     the connection. Afterwards `available_at` in the future is what keeps other
-    workers off the row; a crash simply lets the lease expire.
+    workers off the row; a crash simply lets the lease expire. A waiting retry
+    is due at `next_attempt_at`, and claiming clears it so the lease applies.
     """
+    due_at = func.coalesce(Message.next_attempt_at, Message.available_at)
     due = (
       select(Message.id)
-      .where(Message.status.in_(CLAIMABLE), Message.available_at <= func.now())
+      .where(Message.status.in_(CLAIMABLE), due_at <= func.now())
       # A batch shares one now(), so id (uuid7) breaks the tie and keeps the
       # claim order stable and roughly oldest-first.
-      .order_by(Message.available_at, Message.id)
+      .order_by(due_at, Message.id)
       .limit(self.claim_size)
       .with_for_update(skip_locked=True)
     )
@@ -94,7 +116,11 @@ class Dispatcher:
         await db.execute(
           update(Message)
           .where(Message.id.in_(ids))
-          .values(status=MessageStatus.QUEUED, available_at=func.now() + self.lease)
+          .values(
+            status=MessageStatus.QUEUED,
+            available_at=func.now() + self.lease,
+            next_attempt_at=None,
+          )
           .returning(
             Message.id, Message.to_number, Message.sender_id, Message.text, Message.encoding
           )
@@ -114,7 +140,7 @@ class Dispatcher:
     return [ClaimedMessage(*row) for row in rows]
 
   async def dispatch(self, message: ClaimedMessage) -> None:
-    """Take a permit, submit once, then record SUBMITTED or release for a later retry."""
+    """Take a permit, submit once, then record the attempt and its consequence."""
     try:
       await self.limiter.acquire()
     except RedisError:
@@ -123,22 +149,165 @@ class Dispatcher:
       await self.release(message.id)
       return
 
+    started_at = datetime.now(UTC)
     try:
       response = await self.carrier_client.post("/submit", json=message.carrier_payload())
-    except httpx.HTTPError as error:
-      # Includes the 2s timeout. The carrier may still have accepted the message;
-      # resubmitting the same message_id is safe because the carrier dedupes on it.
-      logger.info("submit of %s failed (%r); will retry", message.id, error)
-      await self.release(message.id)
+    except httpx.TimeoutException as exc:
+      # The carrier may have accepted before the response was lost. Retrying the
+      # same message_id is safe because the carrier dedupes on it.
+      logger.info("submit of %s timed out (%r); treating as ambiguous", message.id, exc)
+      await self.record_attempt(
+        message.id, SubmitOutcome.AMBIGUOUS, None, repr(exc), started_at
+      )
+      await self.retry_or_fail(message.id)
+      return
+    except httpx.HTTPError as exc:
+      # Connection-level failure: the submit never produced an acceptance.
+      logger.info("submit of %s failed (%r); will retry", message.id, exc)
+      await self.record_attempt(
+        message.id, SubmitOutcome.TRANSIENT, None, repr(exc), started_at
+      )
+      await self.retry_or_fail(message.id)
       return
 
-    if response.status_code != 200:
-      # Ticket 13 adds the real policy (400 is permanent, max attempts, refunds).
+    finished_at = datetime.now(UTC)
+    if response.status_code == 200:
+      await self.record_attempt(
+        message.id, SubmitOutcome.ACCEPTED, 200, None, started_at, finished_at
+      )
+      await self.record_submitted(message.id, response.json()["carrier_id"])
+      return
+
+    error = self._error_code(response)
+    # Only a request the carrier definitively rejected is permanent; every other
+    # status (429, 5xx, unexpected 4xx) may succeed on a later attempt.
+    outcome = SubmitOutcome.PERMANENT if response.status_code == 400 else SubmitOutcome.TRANSIENT
+    await self.record_attempt(
+      message.id, outcome, response.status_code, error, started_at, finished_at
+    )
+    if outcome is SubmitOutcome.PERMANENT:
+      logger.info("submit of %s was permanently rejected (%s)", message.id, error)
+      await self.fail(message.id, ambiguous=False)
+    else:
       logger.info("submit of %s returned %s; will retry", message.id, response.status_code)
-      await self.release(message.id)
-      return
+      await self.retry_or_fail(message.id)
 
-    await self.record_submitted(message.id, response.json()["carrier_id"])
+  @staticmethod
+  def _error_code(response: httpx.Response) -> str:
+    """The carrier's machine-readable error, or a bounded body excerpt."""
+    try:
+      payload = response.json()
+    except ValueError:
+      return response.text[:200]
+    if isinstance(payload, dict) and isinstance(payload.get("error"), str):
+      return payload["error"]
+    return response.text[:200]
+
+  async def record_attempt(
+    self,
+    message_id: uuid.UUID,
+    outcome: SubmitOutcome,
+    http_status: int | None,
+    error: str | None,
+    started_at: datetime,
+    finished_at: datetime | None = None,
+  ) -> None:
+    """Append one submit attempt in its own transaction, after the HTTP call."""
+    async with self.sessions() as db:
+      attempt_number = (
+        await db.scalar(
+          select(func.coalesce(func.max(SubmitAttempt.attempt_number), 0) + 1).where(
+            SubmitAttempt.message_id == message_id
+          )
+        )
+        or 1
+      )
+      db.add(
+        SubmitAttempt(
+          id=uuid.uuid7(),
+          message_id=message_id,
+          attempt_number=attempt_number,
+          outcome=outcome.value,
+          http_status=http_status,
+          error=error,
+          started_at=started_at,
+          finished_at=finished_at or datetime.now(UTC),
+        )
+      )
+      await db.commit()
+
+  def backoff(self, attempt_number: int) -> timedelta:
+    """Exponential delay with jitter: base, 2x, 4x, ... up to the cap."""
+    seconds = min(self.backoff_cap, self.backoff_base * 2 ** (attempt_number - 1))
+    return timedelta(seconds=seconds * random.uniform(MIN_JITTER_RATIO, 1.0))
+
+  async def retry_or_fail(self, message_id: uuid.UUID) -> None:
+    """Schedule the next attempt, or settle the message once attempts run out.
+
+    Exhaustion after only ambiguous timeouts leaves the charge alone and flags
+    the message for review, because the carrier may have delivered and billed
+    it. Any definitive failure (permanent rejection or connection error) means
+    the carrier did not accept, so the charge is refunded exactly once.
+    """
+    async with self.sessions() as db:
+      outcomes = list(
+        (
+          await db.execute(
+            select(SubmitAttempt.outcome)
+            .where(SubmitAttempt.message_id == message_id)
+            .order_by(SubmitAttempt.attempt_number, SubmitAttempt.id)
+          )
+        )
+        .scalars()
+        .all()
+      )
+      if len(outcomes) >= self.max_attempts:
+        ambiguous = all(outcome == SubmitOutcome.AMBIGUOUS for outcome in outcomes)
+        await self._fail(db, message_id, ambiguous=ambiguous)
+      else:
+        await db.execute(
+          update(Message)
+          .where(Message.id == message_id, Message.status == MessageStatus.QUEUED)
+          .values(next_attempt_at=func.now() + self.backoff(len(outcomes)))
+          .execution_options(synchronize_session=False)
+        )
+      await db.commit()
+
+  async def fail(self, message_id: uuid.UUID, *, ambiguous: bool) -> bool:
+    """Make one conditional, idempotent FAILED transition and refund if warranted."""
+    async with self.sessions() as db:
+      failed = await self._fail(db, message_id, ambiguous=ambiguous)
+      await db.commit()
+      return failed
+
+  async def _fail(self, db: AsyncSession, message_id: uuid.UUID, *, ambiguous: bool) -> bool:
+    """FAILED wins only from a non-terminal state; a late DLR keeps its outcome."""
+    row = (
+      await db.execute(
+        update(Message)
+        .where(Message.id == message_id, Message.status.in_(NONTERMINAL_STATUS))
+        .values(
+          status=MessageStatus.FAILED,
+          final_at=func.coalesce(Message.final_at, func.now()),
+          billing_state=BillingState.REVIEW if ambiguous else BillingState.NORMAL,
+          next_attempt_at=None,
+        )
+        .returning(Message.tenant_id, Message.total_price_cents)
+        .execution_options(synchronize_session=False)
+      )
+    ).one_or_none()
+    if row is None:
+      return False
+
+    await db.execute(
+      pg_insert(MessageEvent)
+      .values(id=uuid.uuid7(), message_id=message_id, status=MessageStatus.FAILED)
+      .on_conflict_do_nothing(index_elements=["message_id", "status"])
+    )
+    if not ambiguous:
+      # Ambiguous exhaustion must not refund: the carrier may have delivered.
+      await BillingService(db).refund(row.tenant_id, message_id, row.total_price_cents)
+    return True
 
   async def record_submitted(self, message_id: uuid.UUID, carrier_id: str) -> None:
     """Move to SUBMITTED only from ACCEPTED/QUEUED: a status that an early DLR (or any
@@ -159,6 +328,7 @@ class Dispatcher:
             ),
             carrier_id=func.coalesce(Message.carrier_id, carrier_id),
             submitted_at=func.coalesce(Message.submitted_at, func.now()),
+            next_attempt_at=None,
           )
           .returning(Message.carrier)
           .execution_options(synchronize_session=False)

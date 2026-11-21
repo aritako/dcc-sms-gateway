@@ -17,7 +17,7 @@ from app.db.models import Message, MessageStatus
 
 
 async def message_row(session: AsyncSession, message_id) -> object:
-  """Status columns plus the lease, measured on the database clock."""
+  """Status columns plus the lease and retry clocks, measured on the database clock."""
   return (
     await session.execute(
       select(
@@ -25,6 +25,7 @@ async def message_row(session: AsyncSession, message_id) -> object:
         Message.carrier_id,
         Message.submitted_at,
         func.extract("epoch", Message.available_at - func.now()).label("due_in"),
+        func.extract("epoch", Message.next_attempt_at - func.now()).label("retry_in"),
       ).where(Message.id == message_id)
     )
   ).one()
@@ -129,7 +130,9 @@ async def test_dispatch_releases_on_a_non_200(client, session) -> None:
   row = await message_row(session, message_id)
   assert row.status == MessageStatus.QUEUED  # not terminal
   assert row.carrier_id is None and row.submitted_at is None
-  assert 4 < row.due_in <= 6  # retried in ~5 s, so no hot loop
+  # Retried after a jittered backoff of at most 1 s, so no hot loop.
+  assert 0 < row.retry_in <= 1.5
+  assert row.due_in > 20  # still leased while the retry waits
   assert await event_statuses(session, message_id) == [
     MessageStatus.ACCEPTED,
     MessageStatus.QUEUED,
