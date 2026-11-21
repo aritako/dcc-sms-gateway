@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Recorded 1,000-message dispatch run for ticket #10.
+"""Recorded 1,000-message dispatch and DLR run for ticket #10.
 
-Enqueues COUNT messages, waits for them to leave the queue, then prints the
-numbers the acceptance criteria ask for: sustained throughput, retries, 429s and
-the worst one-second window.
+Enqueues COUNT messages, waits for them to reach a terminal delivery state, then
+prints the numbers the acceptance criteria ask for: sustained throughput,
+retries, 429s, the worst one-second window and the final
+DELIVERED/UNDELIVERED/EXPIRED/FAILED counts.
 
 Run from the repo root:
 
@@ -37,7 +38,7 @@ TO = os.environ.get("TO", "+8801712345678")
 SENDER_ID = os.environ.get("FROM", "ACME")
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://sms:sms@localhost:5432/sms")
 MAX_BATCH = 1000  # POST /v1/messages/batch cap
-SETTLED = {"SUBMITTED", "DELIVERED", "UNDELIVERED", "EXPIRED", "FAILED"}
+TERMINAL = {"DELIVERED", "UNDELIVERED", "EXPIRED", "FAILED"}
 WINDOW_SECONDS = 1.0
 
 
@@ -136,18 +137,19 @@ def main() -> int:
     counts: dict[str, int] = {}
     while True:
       counts = status_counts(connection, ids)
-      settled = sum(total for status, total in counts.items() if status in SETTLED)
-      if settled == len(ids):
+      terminal = sum(total for status, total in counts.items() if status in TERMINAL)
+      if terminal == len(ids):
         break
       if time.monotonic() - started > timeout:
-        print(f"timed out after {timeout:.0f}s with {len(ids) - settled} unsettled", file=sys.stderr)
+        remaining = len(ids) - terminal
+        print(f"timed out after {timeout:.0f}s with {remaining} not terminal", file=sys.stderr)
         break
       time.sleep(0.5)
     drain_seconds = time.monotonic() - started
 
     after = read_carrier_stats(carrier)
     times = submitted_times(connection, ids)
-    stuck = len(ids) - sum(total for status, total in counts.items() if status in SETTLED)
+    stuck = len(ids) - sum(total for status, total in counts.items() if status in TERMINAL)
 
     # Only this run's messages: the carrier store also holds earlier traffic.
     id_strings = {str(message_id) for message_id in ids}
@@ -174,6 +176,10 @@ def main() -> int:
     print(f"max rolling 1s   {rolling}  (recorded times, lag carrier receipt)")
     print(f"max calendar 1s  {calendar}  (recorded times)")
     print(f"carrier max_rps  {after.max_rps}  (since carrier start; limit 50)")
+    print(f"delivered        {counts.get('DELIVERED', 0)}")
+    print(f"undelivered      {counts.get('UNDELIVERED', 0)}")
+    print(f"expired          {counts.get('EXPIRED', 0)}")
+    print(f"failed           {counts.get('FAILED', 0)}")
     print(f"stuck            {stuck}")
     if stuck:
       print(f"statuses         {counts}")
