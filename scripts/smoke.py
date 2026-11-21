@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live smoke test: idempotent sends (#7) and a terminal delivery (#21).
+"""Live smoke test: idempotent sends and a terminal delivery.
 
 Runs four live checks, then prints a per-tenant status table with:
 tenant, messages, opening balance, ledger sum and current balance.
