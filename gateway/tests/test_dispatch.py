@@ -1,3 +1,5 @@
+import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -81,6 +83,54 @@ async def test_claim_takes_released_queued_but_not_leased_or_finished(client, se
   assert await event_statuses(session, released) == [MessageStatus.ACCEPTED, MessageStatus.QUEUED]
   assert (await message_row(session, leased)).due_in > 250
   assert (await message_row(session, finished)).status == MessageStatus.SUBMITTED
+
+
+async def test_claim_gives_each_tenant_a_turn_before_a_second(client, session) -> None:
+  await create_tenant(session, name="Campaign", api_key="campaign-key")
+  await create_tenant(session, name="Bank", api_key="bank-key")
+  campaign = [
+    uuid.UUID(message["id"])
+    for message in (await send_batch(client, 5, key="campaign-key")).json()["messages"]
+  ]
+  bank = [
+    uuid.UUID(message["id"])
+    for message in (await send_batch(client, 1, key="bank-key")).json()["messages"]
+  ]
+
+  dispatcher = make_dispatcher(None, worker_claim_size=4)
+  first = [message.id for message in await dispatcher.claim()]
+  second = [message.id for message in await dispatcher.claim()]
+
+  # The bank's single message is claimed with the campaign's head, not after
+  # the campaign's whole backlog, and the campaign keeps FIFO within itself.
+  assert len(first) == 4
+  assert bank[0] in first
+  assert len(set(first) & set(campaign)) == 3
+  assert max(set(first) & set(campaign)) < min(set(second) & set(campaign))
+  assert set(second) == set(campaign) - set(first)
+
+
+async def test_three_workers_claim_disjoint_and_fair_batches(client, session) -> None:
+  await create_tenant(session, name="Campaign", api_key="campaign-key")
+  await create_tenant(session, name="Bank", api_key="bank-key")
+  campaign = {
+    uuid.UUID(message["id"])
+    for message in (await send_batch(client, 10, key="campaign-key")).json()["messages"]
+  }
+  bank = {
+    uuid.UUID(message["id"])
+    for message in (await send_batch(client, 10, key="bank-key")).json()["messages"]
+  }
+
+  workers = [make_dispatcher(None, worker_claim_size=4) for _ in range(3)]
+  batches = await asyncio.gather(*(worker.claim() for worker in workers))
+  claimed = [message.id for batch in batches for message in batch]
+
+  # SKIP LOCKED hands each row to exactly one worker, and no tenant is crowded
+  # out of the first round even though the other one has the same backlog.
+  assert len(claimed) == 12
+  assert len(claimed) == len(set(claimed))
+  assert set(claimed) & campaign and set(claimed) & bank
 
 
 async def test_dispatch_records_submitted_after_a_200(

@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 from redis.exceptions import RedisError
-from sqlalchemy import exists, func, select, update
+from sqlalchemy import exists, func, select, true, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -86,7 +86,13 @@ class Dispatcher:
     self.backoff_cap = settings.retry_backoff_cap_seconds
 
   async def claim(self) -> list[ClaimedMessage]:
-    """Lease up to `claim_size` due messages, mark them QUEUED and record the event.
+    """Lease up to `claim_size` due messages, giving every tenant a turn.
+
+    Each tenant's oldest due message is claimed first (`heads`), so a backlog
+    cannot put another tenant's OTP behind it; the rest of the batch (`fill`) is
+    the globally oldest due work, which keeps one busy tenant at full throughput.
+    Within a tenant both parts order by due time, so first attempts stay FIFO and
+    retries enter at `next_attempt_at`; a retry that is not due yet is invisible.
 
     One short transaction owns the whole claim: the SELECT takes a pessimistic
     row lock, the UPDATE starts the lease, and the commit drops both the lock and
@@ -95,15 +101,41 @@ class Dispatcher:
     is due at `next_attempt_at`, and claiming clears it so the lease applies.
     """
     due_at = func.coalesce(Message.next_attempt_at, Message.available_at)
-    due = (
-      select(Message.id)
+    active = (
+      select(Message.tenant_id, func.min(due_at).label("head_due"))
       .where(Message.status.in_(CLAIMABLE), due_at <= func.now())
-      # A batch shares one now(), so id (uuid7) breaks the tie and keeps the
-      # claim order stable and roughly oldest-first.
-      .order_by(due_at, Message.id)
+      .group_by(Message.tenant_id)
+      .order_by(func.min(due_at))
       .limit(self.claim_size)
-      .with_for_update(skip_locked=True)
+      .cte("active")
     )
+    head = (
+      select(Message.id)
+      .where(
+        Message.tenant_id == active.c.tenant_id,
+        Message.status.in_(CLAIMABLE),
+        due_at <= func.now(),
+      )
+      .order_by(due_at, Message.id)
+      .limit(1)
+      .with_for_update(skip_locked=True)
+      .lateral("head")
+    )
+    heads = select(head.c.id).select_from(active.join(head, true())).cte("heads")
+    remaining = self.claim_size - select(func.count()).select_from(heads).scalar_subquery()
+    fill = (
+      select(Message.id)
+      .where(
+        Message.status.in_(CLAIMABLE),
+        due_at <= func.now(),
+        Message.id.not_in(select(heads.c.id)),
+      )
+      .order_by(due_at, Message.id)
+      .limit(remaining)
+      .with_for_update(skip_locked=True)
+      .cte("fill")
+    )
+    due = select(heads.c.id).union_all(select(fill.c.id))
 
     async with self.sessions() as db:
       ids = (await db.execute(due)).scalars().all()
