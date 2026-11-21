@@ -35,6 +35,6 @@ async def test_fake_carrier_records_submits(fake_carrier_client: AsyncClient, fa
 
   response = await fake_carrier_client.post("/submit", json=payload)
 
-  assert response.status_code == 202
+  assert response.status_code == 200
   assert response.json() == {"carrier_id": "fake-1"}
   assert fake_carrier.submits == [payload]

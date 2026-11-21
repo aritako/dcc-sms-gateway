@@ -113,7 +113,7 @@ class FakeCarrier:
     if request.method == "POST" and request.url.path == "/submit":
       payload = json.loads(request.content or b"{}")
       self.submits.append(payload)
-      return httpx.Response(202, json={"carrier_id": f"fake-{len(self.submits)}"})
+      return httpx.Response(200, json={"carrier_id": f"fake-{len(self.submits)}"})
     return httpx.Response(404, json={"error": "not found"})
 
 
