@@ -10,7 +10,7 @@ from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.dlr import lock_pending_dlrs, reconcile_dlr, sweep_parked_dlrs
+from app.core.dlr import lock_pending_receipts, reconcile_dlr, sweep_parked_dlrs
 from app.db.models import Message, MessageEvent, MessageStatus
 from app.settings import Settings
 
@@ -167,18 +167,18 @@ class Dispatcher:
       if carrier is None:
         return
 
-      pending = await lock_pending_dlrs(db, carrier, carrier_id)
+      pending_receipts = await lock_pending_receipts(db, carrier, carrier_id)
       await db.execute(
         pg_insert(MessageEvent)
         .values(
           id=uuid.uuid7(),
           message_id=message_id,
           status=MessageStatus.SUBMITTED,
-          source="dlr" if pending else "gateway",
+          source="dlr" if pending_receipts else "gateway",
         )
         .on_conflict_do_nothing(index_elements=["message_id", "status"])
       )
-      for inbox in pending:
+      for inbox in pending_receipts:
         await reconcile_dlr(db, message_id, inbox)
       await db.commit()
 

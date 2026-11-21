@@ -71,10 +71,14 @@ async def apply_terminal_dlr(
   return True
 
 
-async def lock_pending_dlrs(
+async def lock_pending_receipts(
   db: AsyncSession, carrier: str, carrier_id: str
 ) -> Sequence[DlrInbox]:
-  """Parked receipts for this carrier id, locked so only one reconciler applies them."""
+  """Lock this carrier id's PENDING inbox rows, skipping rows another reconciler holds.
+
+  These are receipts, not messages. The message's status is guarded separately by
+  `apply_terminal_dlr`, so a terminal message still rejects them.
+  """
   rows = (
     await db.execute(
       select(DlrInbox)
@@ -93,7 +97,7 @@ async def lock_pending_dlrs(
 async def reconcile_dlr(
   db: AsyncSession, message_id: uuid.UUID, inbox: DlrInbox
 ) -> bool:
-  """Apply one parked receipt and record the outcome on its inbox row."""
+  """Apply one parked receipt and record the outcome; a terminal message rejects it."""
   applied = await apply_terminal_dlr(
     db,
     message_id,
