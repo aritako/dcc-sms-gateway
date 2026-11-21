@@ -32,6 +32,10 @@ uv run uvicorn app.main:app --reload     # from gateway/
   `amount`, `balance_after` (integer cents), `message_id` and `created_at`;
   accepts `limit` and `offset`.
 - `GET /v1/stats` — message counts for every status, zero-filled.
+- `POST /carrier/dlr` — signed carrier delivery receipt (`X-Signature` hex
+  HMAC-SHA256 over the raw body): `401` on a bad signature, `400` on an invalid
+  body, `200` once recorded (applied, parked until the carrier id is known, or
+  rejected as a duplicate/late terminal).
 
 Reads accept `X-API-Key` or `X-Admin-Key`. A tenant key sees only its own data;
 the admin key may pass `tenant_id` to scope a read to one tenant. A wrong admin
