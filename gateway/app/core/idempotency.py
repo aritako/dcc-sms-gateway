@@ -41,7 +41,8 @@ class IdempotencyService:
     if stored.request_hash != fingerprint:
       return JSONResponse(status_code=409, content={"error": "IDEMPOTENCY_KEY_REUSED"})
     # complete() shares the winner's transaction, so a committed row is complete.
-    assert stored.response_status is not None and stored.response_body is not None
+    if stored.response_status is None or stored.response_body is None:
+      raise RuntimeError(f"idempotency key {stored.key!r} is incomplete")
     return JSONResponse(status_code=stored.response_status, content=stored.response_body)
 
   async def claim(
