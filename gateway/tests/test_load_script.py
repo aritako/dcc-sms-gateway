@@ -153,7 +153,9 @@ async def test_message_ids_and_audit_billing_round_trip(
     assert audit.tenants[0].run_messages == 2
     assert audit.tenants[0].run_charges == 2
     assert audit.tenants[0].run_refunds == 0
-    assert audit.tenants[0].run_ledger == -6
+    assert audit.tenants[0].run_ledger == -sum(
+      message["total_price"] for message in sent.json()["messages"]
+    )
 
     # A second batch with the same refs is the duplicate an idempotency bug
     # would leave behind; reading by client_ref must see all four rows.

@@ -685,7 +685,8 @@ async def audit_billing(
              count(*) FILTER (WHERE refund_count > 0 AND status <> 'FAILED')
                AS ineligible_refunds,
              count(*) FILTER (WHERE refund_count = 0
-                                AND status = 'FAILED' AND billing_state = 'NORMAL')
+                                AND status = 'FAILED' AND billing_state = 'NORMAL'
+                                AND message_total > 0)
                AS unrefunded_failures
         FROM (
           SELECT m.id,
@@ -1081,6 +1082,10 @@ async def run(cfg: Config) -> dict[str, Any]:
       errors.append(f"{billing.duplicate_client_refs:,} duplicate client_ref(s)")
     if billing.missing_client_refs:
       errors.append(f"{billing.missing_client_refs:,} message(s) have no client_ref")
+    if billing.missing_messages:
+      errors.append(
+        f"{billing.missing_messages:,} accepted message(s) are missing from the database"
+      )
   for tenant in billing.tenants:
     if tenant.other_ledger:
       warnings.append(
