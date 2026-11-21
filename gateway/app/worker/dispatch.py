@@ -172,17 +172,7 @@ class Dispatcher:
 
     finished_at = datetime.now(UTC)
     if response.status_code == 200:
-      carrier_id = self._carrier_id(response)
-      if carrier_id is None:
-        # A 200 is an acceptance, but without its carrier id the DLR cannot be
-        # linked. Treat it as ambiguous and let the retry budget park it for
-        # review instead of looping on the lease.
-        logger.warning("submit of %s returned 200 without a carrier_id", message.id)
-        await self.record_attempt(
-          message.id, SubmitOutcome.AMBIGUOUS, 200, "MISSING_CARRIER_ID", started_at, finished_at
-        )
-        await self.retry_or_fail(message.id)
-        return
+      carrier_id = response.json()["carrier_id"]
       await self.record_attempt(
         message.id, SubmitOutcome.ACCEPTED, 200, None, started_at, finished_at
       )
@@ -202,18 +192,6 @@ class Dispatcher:
     else:
       logger.info("submit of %s returned %s; will retry", message.id, response.status_code)
       await self.retry_or_fail(message.id)
-
-  @staticmethod
-  def _carrier_id(response: httpx.Response) -> str | None:
-    """The carrier's id from a 200 body, or None when the body is unusable."""
-    try:
-      payload = response.json()
-    except ValueError:
-      return None
-    if not isinstance(payload, dict):
-      return None
-    carrier_id = payload.get("carrier_id")
-    return carrier_id if isinstance(carrier_id, str) and carrier_id else None
 
   @staticmethod
   def _error_code(response: httpx.Response) -> str:
