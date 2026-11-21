@@ -64,6 +64,8 @@ services:
   worker:
     build: ./gateway
     environment: *gateway-env
+    deploy:
+      replicas: 3
     volumes:
       - ./gateway/app:/app/app
     command:
