@@ -38,8 +38,7 @@ async def apply_terminal_dlr(
 ) -> bool:
   """Apply one terminal status with a forward-only conditional UPDATE.
 
-  Returns False when the message is already terminal (or FAILED), in which case
-  nothing is written. The caller owns the transaction.
+  Returns False when the message is already terminal (or FAILED).
   """
   applied = (
     await db.execute(

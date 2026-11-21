@@ -214,8 +214,9 @@ class MessageEvent(Base):
 class DlrInbox(Base):
   """Every received delivery receipt, including those parked before a carrier id exists.
 
-  The unique key is the carrier's identity for a receipt: re-sending the same
-  body is a duplicate, not a new event. `state` records what happened to it.
+  The message row stays the source of truth for delivery status. This table is
+  the durable receipt log and the parking queue for early receipts: its unique
+  key identifies a receipt, and `state` records what happened to it.
   """
 
   __tablename__ = "dlr_inbox"
