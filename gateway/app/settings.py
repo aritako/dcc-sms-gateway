@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,7 +19,17 @@ class Settings(BaseSettings):
   dlr_secret: str
   admin_api_key: str
   carrier_url: str = "http://localhost:8001"
-  carrier_submit_rate: int = 20
+
+  # WORKER CONFIGS
+  # Submits per second across ALL workers. The carrier rejects above 50/s, so 50
+  # is a hard ceiling; the 45 default leaves headroom for clock and network jitter.
+  carrier_submit_rate: int = Field(default=45, ge=1, le=50)
+  carrier_timeout_seconds: float = 2.0
+
+  worker_lease_seconds: float = 30.0
+  worker_claim_size: int = 20
+  worker_retry_seconds: float = 5.0
+  worker_idle_seconds: float = 0.25
 
 
 def load_settings(**kwargs: Any) -> Settings:
