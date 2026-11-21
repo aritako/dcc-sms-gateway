@@ -1,38 +1,32 @@
 from uuid import UUID
 
-import pytest
-from helpers import ADMIN_HEADERS, create_tenant, send_message, set_message
+from helpers import ADMIN_HEADERS, DEFAULT_KEY, SHOP_KEY, create_tenant, send_message, set_message
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import MessageStatus
 
 STATS_PATH = "/v1/stats"
-ACME_KEY = "acme-key"
-SHOP_KEY = "shop-key"
-ALL_STATUSES = {
-  "ACCEPTED": 0,
-  "QUEUED": 0,
-  "SUBMITTED": 0,
-  "DELIVERED": 0,
-  "UNDELIVERED": 0,
-  "EXPIRED": 0,
-  "FAILED": 0,
-}
-
-
-@pytest.fixture
-async def tenant(session: AsyncSession):
-  return await create_tenant(session, name="Acme Bank", api_key=ACME_KEY)
+ALL_STATUSES = {status.value: 0 for status in MessageStatus}
 
 
 async def _stats(
-  client: AsyncClient, *, key: str = ACME_KEY, headers: dict[str, str] | None = None, **params
+  client: AsyncClient, *, key: str = DEFAULT_KEY, headers: dict[str, str] | None = None, **params
 ):
   return await client.get(STATS_PATH, params=params, headers=headers or {"X-API-Key": key})
 
 
 async def test_stats_zero_fills_every_status(client: AsyncClient, tenant) -> None:
+  # Pin the public status vocabulary; the expected counts derive from the enum.
+  assert set(ALL_STATUSES) == {
+    "ACCEPTED",
+    "QUEUED",
+    "SUBMITTED",
+    "DELIVERED",
+    "UNDELIVERED",
+    "EXPIRED",
+    "FAILED",
+  }
   response = await _stats(client)
 
   assert response.status_code == 200
@@ -42,19 +36,19 @@ async def test_stats_zero_fills_every_status(client: AsyncClient, tenant) -> Non
 async def test_stats_counts_each_status_for_the_tenant(
   client: AsyncClient, session: AsyncSession, tenant
 ) -> None:
-  delivered = (await send_message(client, key=ACME_KEY)).json()["id"]
-  failed = (await send_message(client, key=ACME_KEY)).json()["id"]
-  await send_message(client, key=ACME_KEY)
+  delivered = (await send_message(client)).json()["id"]
+  failed = (await send_message(client)).json()["id"]
+  await send_message(client)
   await set_message(session, UUID(delivered), status=MessageStatus.DELIVERED)
   await set_message(session, UUID(failed), status=MessageStatus.FAILED)
 
   await create_tenant(session, name="ShopFast", api_key=SHOP_KEY)
   await send_message(client, key=SHOP_KEY)
 
-  acme = (await _stats(client)).json()
+  own = (await _stats(client)).json()
   shop = (await _stats(client, key=SHOP_KEY)).json()
 
-  assert acme == {
+  assert own == {
     "counts": {
       **ALL_STATUSES,
       "ACCEPTED": 1,
@@ -69,8 +63,8 @@ async def test_admin_stats_cover_all_tenants_or_one(
   client: AsyncClient, session: AsyncSession, tenant
 ) -> None:
   other = await create_tenant(session, name="ShopFast", api_key=SHOP_KEY)
-  await send_message(client, key=ACME_KEY)
-  await send_message(client, key=ACME_KEY)
+  await send_message(client)
+  await send_message(client)
   await send_message(client, key=SHOP_KEY)
 
   across = (await _stats(client, headers=ADMIN_HEADERS)).json()

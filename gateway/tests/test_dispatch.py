@@ -1,39 +1,19 @@
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from redis.exceptions import ConnectionError as RedisConnectionError
+from helpers import (
+  StubLimiter,
+  create_tenant,
+  event_statuses,
+  make_dispatcher,
+  send_batch,
+  send_message,
+  set_message,
+)
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_sessionmaker
-from app.db.models import Message, MessageEvent, MessageStatus
-from app.settings import get_settings
-from app.worker.dispatch import Dispatcher
-from tests.helpers import create_tenant, send_batch, send_message, set_message
-
-
-class StubLimiter:
-  """Permit source: always granted, or always down to exercise fail-closed."""
-
-  def __init__(self, *, down: bool = False) -> None:
-    self.down = down
-    self.calls = 0
-
-  async def acquire(self) -> None:
-    self.calls += 1
-    if self.down:
-      raise RedisConnectionError("redis is down")
-
-
-def make_dispatcher(
-  carrier: httpx.AsyncClient | None, limiter: StubLimiter | None = None
-) -> Dispatcher:
-  return Dispatcher(
-    sessions=get_sessionmaker(),
-    carrier_client=carrier,  # type: ignore[arg-type]  # claim tests never submit
-    limiter=limiter or StubLimiter(),  # type: ignore[arg-type]
-    settings=get_settings(),
-  )
+from app.db.models import Message, MessageStatus
 
 
 async def message_row(session: AsyncSession, message_id) -> object:
@@ -48,20 +28,6 @@ async def message_row(session: AsyncSession, message_id) -> object:
       ).where(Message.id == message_id)
     )
   ).one()
-
-
-async def event_statuses(session: AsyncSession, message_id) -> list[str]:
-  return list(
-    (
-      await session.execute(
-        select(MessageEvent.status)
-        .where(MessageEvent.message_id == message_id)
-        .order_by(MessageEvent.id)
-      )
-    )
-    .scalars()
-    .all()
-  )
 
 
 async def test_claim_leases_due_messages_and_marks_them_queued(client, session) -> None:

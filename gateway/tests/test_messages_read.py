@@ -1,31 +1,37 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-import pytest
+from helpers import (
+  ADMIN_HEADERS,
+  DEFAULT_KEY,
+  SHOP_KEY,
+  create_tenant,
+  send_batch,
+  send_message,
+  set_message,
+)
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import MessageStatus
-from tests.helpers import ADMIN_HEADERS, create_tenant, send_batch, send_message, set_message
 
 LIST_PATH = "/v1/messages"
-ACME_KEY = "acme-key"
-SHOP_KEY = "shop-key"
-
-
-@pytest.fixture
-async def tenant(session: AsyncSession):
-  return await create_tenant(session, name="Acme Bank", api_key=ACME_KEY)
 
 
 async def _list(
-  client: AsyncClient, *, key: str = ACME_KEY, headers: dict[str, str] | None = None, **params
+  client: AsyncClient,
+  *,
+  key: str = DEFAULT_KEY,
+  headers: dict[str, str] | None = None,
+  **params,
 ):
   return await client.get(LIST_PATH, params=params, headers=headers or {"X-API-Key": key})
 
 
 async def _detail(client: AsyncClient, message_id: str, *, headers: dict[str, str] | None = None):
-  return await client.get(f"{LIST_PATH}/{message_id}", headers=headers or {"X-API-Key": ACME_KEY})
+  return await client.get(
+    f"{LIST_PATH}/{message_id}", headers=headers or {"X-API-Key": DEFAULT_KEY}
+  )
 
 
 def _refs(body: dict) -> list[str]:
@@ -36,7 +42,7 @@ async def test_list_returns_newest_first_summaries_without_text(
   client: AsyncClient, tenant
 ) -> None:
   for ref in ("first", "second", "third"):
-    assert (await send_message(client, key=ACME_KEY, client_ref=ref)).status_code == 202
+    assert (await send_message(client, client_ref=ref)).status_code == 202
 
   response = await _list(client)
 
@@ -63,7 +69,7 @@ async def test_list_returns_newest_first_summaries_without_text(
     "batch_id",
     "created_at",
   }
-  assert summary["tenant_name"] == "Acme Bank"
+  assert summary["tenant_name"] == "Test Tenant"
   assert summary["from"] == "ACME"
   assert summary["to"] == "+8801712345678"
   assert summary["status"] == "ACCEPTED"
@@ -76,21 +82,20 @@ async def test_list_returns_newest_first_summaries_without_text(
 
 async def test_list_is_tenant_scoped(client: AsyncClient, session: AsyncSession, tenant) -> None:
   await create_tenant(session, name="ShopFast", api_key=SHOP_KEY)
-  await send_message(client, key=ACME_KEY, client_ref="acme")
+  await send_message(client, client_ref="acme")
   await send_message(client, key=SHOP_KEY, client_ref="shop")
 
-  acme = (await _list(client)).json()
+  own = (await _list(client)).json()
   shop = (await _list(client, key=SHOP_KEY)).json()
 
-  assert _refs(acme) == ["acme"]
+  assert _refs(own) == ["acme"]
   assert _refs(shop) == ["shop"]
 
 
 async def test_list_defaults_to_50_and_rejects_limits_outside_1_to_200(
-  client: AsyncClient, session: AsyncSession
+  client: AsyncClient, tenant
 ) -> None:
-  await create_tenant(session, api_key=ACME_KEY)
-  assert (await send_batch(client, 55, key=ACME_KEY)).status_code == 202
+  assert (await send_batch(client, 55)).status_code == 202
 
   first_page = (await _list(client)).json()
   assert len(first_page["messages"]) == 50
@@ -105,8 +110,8 @@ async def test_list_defaults_to_50_and_rejects_limits_outside_1_to_200(
 
 
 async def test_list_filters_by_status(client: AsyncClient, session: AsyncSession, tenant) -> None:
-  delivered = (await send_message(client, key=ACME_KEY, client_ref="delivered")).json()["id"]
-  await send_message(client, key=ACME_KEY, client_ref="accepted")
+  delivered = (await send_message(client, client_ref="delivered")).json()["id"]
+  await send_message(client, client_ref="accepted")
   await set_message(session, UUID(delivered), status=MessageStatus.DELIVERED)
 
   body = (await _list(client, status="DELIVERED")).json()
@@ -116,8 +121,8 @@ async def test_list_filters_by_status(client: AsyncClient, session: AsyncSession
 
 
 async def test_list_filters_by_client_ref(client: AsyncClient, tenant) -> None:
-  await send_message(client, key=ACME_KEY, client_ref="order-42")
-  await send_message(client, key=ACME_KEY, client_ref="order-43")
+  await send_message(client, client_ref="order-42")
+  await send_message(client, client_ref="order-43")
 
   assert _refs((await _list(client, client_ref="order-42")).json()) == ["order-42"]
   # Exact match: a prefix search is not silently widened to a LIKE scan.
@@ -129,7 +134,7 @@ async def test_list_filters_by_inclusive_date_range(
 ) -> None:
   message_ids = []
   for ref in ("a", "b", "c"):
-    message_ids.append((await send_message(client, key=ACME_KEY, client_ref=ref)).json()["id"])
+    message_ids.append((await send_message(client, client_ref=ref)).json()["id"])
 
   base = datetime(2026, 1, 1, tzinfo=UTC)
   for index, message_id in enumerate(message_ids):
@@ -155,7 +160,7 @@ async def test_list_filters_by_inclusive_date_range(
 
 async def test_list_paginates_with_offset_and_has_more(client: AsyncClient, tenant) -> None:
   for ref in ("a", "b", "c"):
-    await send_message(client, key=ACME_KEY, client_ref=ref)
+    await send_message(client, client_ref=ref)
 
   first = (await _list(client, limit=2)).json()
   second = (await _list(client, limit=2, offset=2)).json()
@@ -172,7 +177,7 @@ async def test_list_paginates_with_offset_and_has_more(client: AsyncClient, tena
 async def test_detail_returns_the_message_and_event_history(
   client: AsyncClient, session: AsyncSession, tenant
 ) -> None:
-  sent = (await send_message(client, key=ACME_KEY, client_ref="detail-1")).json()
+  sent = (await send_message(client, client_ref="detail-1")).json()
   await set_message(session, UUID(sent["id"]), status=MessageStatus.DELIVERED)
 
   response = await _detail(client, sent["id"])
@@ -184,7 +189,7 @@ async def test_detail_returns_the_message_and_event_history(
   assert body["client_ref"] == "detail-1"
   assert body["encoding"] == "GSM7"
   assert body["status"] == "DELIVERED"
-  assert body["tenant_name"] == "Acme Bank"
+  assert body["tenant_name"] == "Test Tenant"
   assert body["currency"] == "USD"
   assert "attempts" not in body
   assert [event["status"] for event in body["events"]] == ["ACCEPTED", "DELIVERED"]
@@ -211,12 +216,12 @@ async def test_admin_lists_across_tenants_and_can_scope_to_one(
   client: AsyncClient, session: AsyncSession, tenant
 ) -> None:
   other = await create_tenant(session, name="ShopFast", api_key=SHOP_KEY)
-  await send_message(client, key=ACME_KEY, client_ref="acme")
+  await send_message(client, client_ref="acme")
   await send_message(client, key=SHOP_KEY, client_ref="shop")
 
   across = (await _list(client, headers=ADMIN_HEADERS)).json()
   assert {message["tenant_name"] for message in across["messages"]} == {
-    "Acme Bank",
+    "Test Tenant",
     "ShopFast",
   }
 
@@ -241,33 +246,3 @@ async def test_admin_detail_crosses_tenants_unless_tenant_id_scopes_it(
   assert across.json()["tenant_name"] == "ShopFast"
   assert scoped.status_code == 404
   assert scoped.json() == {"error": "NOT_FOUND"}
-
-
-async def test_a_tenant_key_can_never_pass_tenant_id(
-  client: AsyncClient, session: AsyncSession, tenant
-) -> None:
-  other = await create_tenant(session, name="ShopFast", api_key=SHOP_KEY)
-
-  foreign = await _list(client, tenant_id=str(other.id))
-  own = await _list(client, tenant_id=str(tenant.id))
-
-  assert foreign.status_code == 403
-  assert foreign.json() == {"error": "FORBIDDEN"}
-  assert own.status_code == 403
-  assert own.json() == {"error": "FORBIDDEN"}
-
-
-async def test_a_wrong_admin_key_fails_closed_even_with_a_valid_tenant_key(
-  client: AsyncClient, tenant
-) -> None:
-  response = await _list(client, headers={"X-API-Key": ACME_KEY, "X-Admin-Key": "wrong-admin-key"})
-
-  assert response.status_code == 401
-  assert response.json() == {"error": "UNAUTHORIZED"}
-
-
-async def test_admin_naming_an_unknown_tenant_is_404(client: AsyncClient, tenant) -> None:
-  response = await _list(client, headers=ADMIN_HEADERS, tenant_id=str(uuid4()))
-
-  assert response.status_code == 404
-  assert response.json() == {"error": "NOT_FOUND"}

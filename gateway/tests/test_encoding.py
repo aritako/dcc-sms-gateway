@@ -7,7 +7,7 @@ from app.db.models import Encoding
 service = EncodingService()
 
 
-def test_table_is_the_full_gsm_03_38_alphabet() -> None:
+def test_gsm_tables_are_the_full_03_38_alphabet() -> None:
   # 128 septet values, minus 0x1B which is the escape into the extension table.
   assert len(GSM7_BASIC) == 127
   assert len(GSM7_EXTENSION) == 10
@@ -17,8 +17,6 @@ def test_table_is_the_full_gsm_03_38_alphabet() -> None:
   for char in "@£$¥¤¡§¿ÄÖÑÜäöñüàΔΦΓΛΩΠΨΣΘΞ":
     assert char in GSM7_BASIC
 
-
-def test_extension_table_is_the_shifted_characters() -> None:
   assert GSM7_EXTENSION == frozenset({"{", "}", "[", "]", "~", "\\", "^", "|", "€", "\f"})
 
 
@@ -43,9 +41,7 @@ def test_euro_costs_two_septets_so_the_boundary_is_eighty() -> None:
   assert service.count_segments("€" * 80) == (Encoding.GSM7, 1)
   assert service.message_length("€" * 80, Encoding.GSM7) == 160
   assert service.count_segments("€" * 81) == (Encoding.GSM7, 2)
-
-
-def test_extension_character_is_not_a_single_character() -> None:
+  # An extension character pushes the last septet into a second segment.
   assert service.count_segments("a" * 159 + "€") == (Encoding.GSM7, 2)
 
 

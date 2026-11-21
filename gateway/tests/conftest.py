@@ -28,7 +28,10 @@ os.environ["REDIS_URL"] = TEST_REDIS_URL
 os.environ["DLR_SECRET"] = "test-dlr-secret"
 os.environ["ADMIN_API_KEY"] = "test-admin-key"
 
+from helpers import create_tenant  # noqa: E402
+
 from app.db.database import dispose_engine, get_engine, get_session  # noqa: E402
+from app.db.models import Tenant  # noqa: E402
 from app.db.redis import close_redis, get_redis  # noqa: E402
 from app.main import app  # noqa: E402
 from app.settings import get_settings  # noqa: E402
@@ -113,6 +116,12 @@ async def client() -> AsyncIterator[AsyncClient]:
     transport=ASGITransport(app=app), base_url="http://gateway.test"
   ) as client:
     yield client
+
+
+@pytest.fixture
+async def tenant(session: AsyncSession) -> Tenant:
+  """Default tenant, funded with 10,000 cents and priced at 3 cents per segment."""
+  return await create_tenant(session)
 
 
 @pytest.fixture
