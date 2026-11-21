@@ -72,18 +72,22 @@ async def set_message(
   *,
   status: MessageStatus | None = None,
   created_at: datetime | None = None,
+  available_at: datetime | None = None,
 ) -> None:
-  """Move a message to a status (recording the event) and/or backdate it."""
+  """Move a message to a status (recording the event) and/or move its clocks."""
   values: dict[str, object] = {}
   if status is not None:
     values["status"] = status.value
   if created_at is not None:
     values["created_at"] = created_at
+  if available_at is not None:
+    values["available_at"] = available_at
   if values:
     await session.execute(update(Message).where(Message.id == message_id).values(**values))
   if status is not None:
     session.add(MessageEvent(message_id=message_id, status=status.value))
   await session.commit()
+
 
 def max_in_any_second(times: list[float]) -> int:
   """Largest number of events inside any 1-second window (two pointers over sorted times)."""
