@@ -8,7 +8,6 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.billing import BillingService
-from app.db.database import get_sessionmaker
 from app.db.models import (
   BillingState,
   DlrInbox,
@@ -20,35 +19,19 @@ from app.db.models import (
   SubmitOutcome,
   Tenant,
 )
-from app.settings import get_settings
-from app.worker.dispatch import Dispatcher
-from tests.helpers import DEFAULT_KEY, create_tenant, send_message, set_message, sign_dlr
+from tests.helpers import (
+  DEFAULT_KEY,
+  StubLimiter,
+  create_tenant,
+  event_statuses,
+  make_dispatcher,
+  send_message,
+  set_message,
+  sign_dlr,
+)
 
 DLR_PATH = "/carrier/dlr"
 CARRIER_ID = "carrier-1"
-
-
-class StubLimiter:
-  """Permit source that counts how often a retry re-enters the limiter."""
-
-  def __init__(self) -> None:
-    self.calls = 0
-
-  async def acquire(self) -> None:
-    self.calls += 1
-
-
-def make_dispatcher(
-  carrier: httpx.AsyncClient | None,
-  limiter: StubLimiter | None = None,
-  **settings: object,
-) -> Dispatcher:
-  return Dispatcher(
-    sessions=get_sessionmaker(),
-    carrier_client=carrier,  # type: ignore[arg-type]  # claim tests never submit
-    limiter=limiter or StubLimiter(),  # type: ignore[arg-type]
-    settings=get_settings().model_copy(update=settings),
-  )
 
 
 def carrier_client(handler) -> httpx.AsyncClient:
@@ -99,20 +82,6 @@ async def tenant_balance(session: AsyncSession) -> int:
   balance = await session.scalar(select(Tenant.balance_cents))
   assert balance is not None
   return balance
-
-
-async def event_statuses(session: AsyncSession, message_id: str) -> list[str]:
-  return list(
-    (
-      await session.execute(
-        select(MessageEvent.status)
-        .where(MessageEvent.message_id == UUID(message_id))
-        .order_by(MessageEvent.id)
-      )
-    )
-    .scalars()
-    .all()
-  )
 
 
 async def test_transient_503_then_200_delivers_once_without_refund(client, session) -> None:
