@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import uuid
 from pathlib import Path
 
+import psycopg
 import pytest
+from helpers import DEFAULT_KEY
+from httpx import AsyncClient
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "load_test.py"
 SPEC = importlib.util.spec_from_file_location("load_test_script", SCRIPT)
@@ -103,14 +107,63 @@ def _audit(tenant: object) -> object:
     duplicate_client_refs=0,
     missing_client_refs=0,
     missing_messages=0,
+    review_messages=0,
   )
 
 
 def test_billing_audit_checks_lifetime_and_run_ledgers() -> None:
   assert _audit(_tenant()).ok
 
-  wrong_run = _tenant(run_ledger=-201)
-  assert not _audit(wrong_run).ok
+  wrong_accounting = _tenant(ledger_before=-101)
+  assert not _audit(wrong_accounting).ok
 
   wrong_lifetime = _tenant(balance=701)
   assert not _audit(wrong_lifetime).ok
+
+
+async def test_message_ids_and_audit_billing_round_trip(
+  client: AsyncClient, tenant: object
+) -> None:
+  messages = [
+    {
+      "to": "+8801712345678",
+      "from": "ACME",
+      "text": "hello",
+      "client_ref": f"run-test-shopfast-{index}",
+    }
+    for index in range(2)
+  ]
+  headers = {"X-API-Key": DEFAULT_KEY}
+  dsn = load_test.postgres_dsn(os.environ["DATABASE_URL"])
+
+  async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as connection:
+    before = await load_test.snapshot_tenants(connection)
+
+    sent = await client.post("/v1/messages/batch", json={"messages": messages}, headers=headers)
+    assert sent.status_code == 202
+
+    ids = await load_test.message_ids_for_run(connection, "run-test", "shopfast")
+    assert {str(message["id"]) for message in sent.json()["messages"]} == {
+      str(message_id) for message_id in ids
+    }
+
+    audit = await load_test.audit_billing(connection, ids, before)
+    assert audit.ok
+    assert len(ids) == 2
+    assert audit.tenants[0].run_messages == 2
+    assert audit.tenants[0].run_charges == 2
+    assert audit.tenants[0].run_refunds == 0
+    assert audit.tenants[0].run_ledger == -6
+
+    # A second batch with the same refs is the duplicate an idempotency bug
+    # would leave behind; reading by client_ref must see all four rows.
+    duplicate = await client.post(
+      "/v1/messages/batch", json={"messages": messages}, headers=headers
+    )
+    assert duplicate.status_code == 202
+
+    all_ids = await load_test.message_ids_for_run(connection, "run-test", "shopfast")
+    duplicate_audit = await load_test.audit_billing(connection, all_ids, before)
+    assert len(all_ids) == 4
+    assert not duplicate_audit.ok
+    assert duplicate_audit.duplicate_client_refs == 2

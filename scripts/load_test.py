@@ -119,16 +119,18 @@ class TenantBilling:
     return self.balance == self.opening + self.ledger
 
   @property
-  def run_ok(self) -> bool:
-    """This run's ledger delta must equal its balance delta and its own rows."""
-    return (
-      self.balance - self.balance_before == self.run_ledger
-      and self.ledger - self.ledger_before == self.run_ledger
-    )
+  def accounting_ok(self) -> bool:
+    """Every balance movement in the window must match the ledger movement."""
+    return self.balance - self.balance_before == self.ledger - self.ledger_before
+
+  @property
+  def other_ledger(self) -> int:
+    """Ledger movement not attributable to this run's messages."""
+    return (self.ledger - self.ledger_before) - self.run_ledger
 
   @property
   def ok(self) -> bool:
-    return self.lifetime_ok and self.run_ok
+    return self.lifetime_ok and self.accounting_ok
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,7 @@ class BillingAudit:
   duplicate_client_refs: int
   missing_client_refs: int
   missing_messages: int
+  review_messages: int
 
   @property
   def ok(self) -> bool:
@@ -749,6 +752,12 @@ async def audit_billing(
   found = await scalar(
     connection, "SELECT count(*) FROM messages WHERE id = ANY(%s::uuid[])", (ids,)
   )
+  review_messages = await scalar(
+    connection,
+    "SELECT count(*) FROM messages "
+    "WHERE id = ANY(%s::uuid[]) AND billing_state = 'REVIEW'",
+    (ids,),
+  )
   expected = len(set(ids))
 
   return BillingAudit(
@@ -762,6 +771,7 @@ async def audit_billing(
     duplicate_client_refs=duplicate_refs,
     missing_client_refs=missing_refs,
     missing_messages=max(0, expected - found),
+    review_messages=review_messages,
   )
 
 
@@ -806,7 +816,8 @@ def render_human(result: dict[str, Any]) -> str:
     f"({carrier['run_submits']:,} submits over "
     f"{carrier['active_submit_seconds']:.1f}s of {carrier['rate_window_source']})",
     f"  observed max submit rate  {carrier['max_attempts_per_second']}/s "
-    f"(this run; carrier lifetime max {carrier['max_rps_since_start']}/s)",
+    f"(rolling 1s of attempt starts; carrier fixed-second max "
+    f"{carrier['max_rps_since_start']}/s)",
     f"  OTP accept->SUBMITTED     p50 {p50:.3f}s  p95 {p95:.3f}s  "
     f"(n={timings['otp_samples']} of {messages['otp']['sent']} submitted)"
     if p50 is not None and p95 is not None
@@ -841,6 +852,8 @@ def render_human(result: dict[str, Any]) -> str:
       f"{tenant['run_messages']:,} messages "
       f"({tenant['run_charges']:,} charges, {tenant['run_refunds']:,} refunds)"
     )
+    if tenant["other_ledger"]:
+      lines.append(f"    other traffic: ledger {tenant['other_ledger']:,} cents")
   lines.extend(
     [
       f"  charges                  wrong count {billing['wrong_charge_counts']:,}, "
@@ -851,7 +864,8 @@ def render_human(result: dict[str, Any]) -> str:
       f"duplicate {billing['duplicate_refunds']:,}",
       f"  client refs              duplicate {billing['duplicate_client_refs']:,}, "
       f"missing {billing['missing_client_refs']:,}",
-      f"  messages                 missing {billing['missing_messages']:,}",
+      f"  messages                 missing {billing['missing_messages']:,}, "
+      f"review {billing['review_messages']:,}",
       "",
       "Checks",
     ]
@@ -928,6 +942,10 @@ async def run(cfg: Config) -> dict[str, Any]:
             f"expected {cfg.count:,} campaign messages in the database, "
             f"found {len(campaign_ids):,}; check idempotency"
           )
+        if set(campaign_response_ids) != set(campaign_ids):
+          errors.append(
+            "campaign response ids differ from the database rows for this run"
+          )
         deadline = time.monotonic() + cfg.drain_timeout
         campaign_counts, campaign_terminal = await wait_terminal(
           connection,
@@ -939,8 +957,9 @@ async def run(cfg: Config) -> dict[str, Any]:
         stop_otps.set()
         await otp_task
 
-      otp_response_count = len(otp_ids)
-      if len(set(otp_ids)) != otp_response_count:
+      otp_response_ids = list(otp_ids)
+      otp_response_count = len(otp_response_ids)
+      if len(set(otp_response_ids)) != otp_response_count:
         errors.append("the single-send API returned duplicate OTP ids")
       otp_ids = await message_ids_for_run(connection, run_id, "acme-otp")
       if len(otp_ids) != otp_response_count:
@@ -948,10 +967,13 @@ async def run(cfg: Config) -> dict[str, Any]:
           f"expected {otp_response_count:,} OTP messages in the database, "
           f"found {len(otp_ids):,}; check idempotency"
         )
+      if set(otp_response_ids) != set(otp_ids):
+        errors.append("OTP response ids differ from the database rows for this run")
+      otp_deadline = time.monotonic() + cfg.drain_timeout
       otp_counts, otp_terminal = await wait_terminal(
         connection,
         otp_ids,
-        deadline=deadline,
+        deadline=otp_deadline,
         label="Acme OTP",
       )
       wall_seconds = time.monotonic() - started
@@ -1028,14 +1050,56 @@ async def run(cfg: Config) -> dict[str, Any]:
   if not all_terminal:
     errors.append(
       f"{total - terminal_total:,} of {total:,} messages did not reach a terminal state "
-      f"within {cfg.drain_timeout:g}s"
+      "before their drain deadline"
     )
   if not billing.ok:
     errors.append("billing reconciliation failed")
+    for tenant in billing.tenants:
+      if not tenant.lifetime_ok:
+        errors.append(
+          f"{tenant.name}: balance {tenant.balance:,} != opening "
+          f"{tenant.opening:,} + ledger {tenant.ledger:,}"
+        )
+      if not tenant.accounting_ok:
+        errors.append(
+          f"{tenant.name}: balance delta {tenant.balance - tenant.balance_before:,} "
+          f"!= ledger delta {tenant.ledger - tenant.ledger_before:,}"
+        )
+    if billing.wrong_charge_counts:
+      errors.append(f"{billing.wrong_charge_counts:,} message(s) do not have one charge")
+    if billing.wrong_charge_amounts:
+      errors.append(f"{billing.wrong_charge_amounts:,} charge amount(s) are wrong")
+    if billing.wrong_refund_amounts:
+      errors.append(f"{billing.wrong_refund_amounts:,} refund amount(s) are wrong")
+    if billing.ineligible_refunds:
+      errors.append(f"{billing.ineligible_refunds:,} refund(s) are ineligible")
+    if billing.unrefunded_failures:
+      errors.append(f"{billing.unrefunded_failures:,} failed message(s) were not refunded")
+    if billing.duplicate_refunds:
+      errors.append(f"{billing.duplicate_refunds:,} message(s) have duplicate refunds")
+    if billing.duplicate_client_refs:
+      errors.append(f"{billing.duplicate_client_refs:,} duplicate client_ref(s)")
+    if billing.missing_client_refs:
+      errors.append(f"{billing.missing_client_refs:,} message(s) have no client_ref")
+  for tenant in billing.tenants:
+    if tenant.other_ledger:
+      warnings.append(
+        f"{tenant.name}: {tenant.other_ledger:,} cents of ledger activity "
+        "outside this run"
+      )
+  if billing.review_messages:
+    warnings.append(
+      f"{billing.review_messages:,} message(s) are in billing REVIEW "
+      "(ambiguous timeout; no automatic refund)"
+    )
   if otp_unsubmitted:
     warnings.append(
       f"{otp_unsubmitted:,} OTP(s) never reached SUBMITTED; "
       "p95 covers submitted OTPs only"
+    )
+  if len(latencies) < 20:
+    warnings.append(
+      f"only {len(latencies):,} OTP latency sample(s); p95 is indicative"
     )
 
   not_terminal = total - terminal_total
@@ -1095,11 +1159,12 @@ async def run(cfg: Config) -> dict[str, Any]:
           "ledger_before": tenant.ledger_before,
           "balance_before": tenant.balance_before,
           "run_ledger": tenant.run_ledger,
+          "other_ledger": tenant.other_ledger,
           "run_messages": tenant.run_messages,
           "run_charges": tenant.run_charges,
           "run_refunds": tenant.run_refunds,
           "lifetime_ok": tenant.lifetime_ok,
-          "run_ok": tenant.run_ok,
+          "accounting_ok": tenant.accounting_ok,
           "ok": tenant.ok,
         }
         for tenant in billing.tenants
@@ -1113,6 +1178,7 @@ async def run(cfg: Config) -> dict[str, Any]:
       "duplicate_client_refs": billing.duplicate_client_refs,
       "missing_client_refs": billing.missing_client_refs,
       "missing_messages": billing.missing_messages,
+      "review_messages": billing.review_messages,
     },
     "checks": [
       (
