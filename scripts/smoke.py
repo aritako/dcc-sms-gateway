@@ -1,20 +1,25 @@
 #!/usr/bin/env python3
-"""Issue #7 smoke test: Idempotency-Key on POST /v1/messages.
+"""Live smoke test: idempotent sends and a terminal delivery.
 
-Runs three live checks, then prints a per-tenant status table with:
+Runs four live checks, then prints a per-tenant status table with:
 tenant, messages, opening balance, ledger sum and current balance.
+
+The last check sends one message and polls `GET /v1/messages/{id}` until it
+reaches DELIVERED, UNDELIVERED, EXPIRED or FAILED, failing on timeout.
 
 Run from the repo root:
 
     uv run --project gateway python scripts/smoke.py
 
-Environment overrides: BASE_URL, API_KEY, TO, FROM, CONCURRENCY, DATABASE_URL.
+Environment overrides: BASE_URL, API_KEY, TO, FROM, CONCURRENCY, POLL_TIMEOUT,
+DATABASE_URL.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -36,7 +41,11 @@ API_KEY = os.environ.get("API_KEY", "dcc_acme_demo_key")
 TO = os.environ.get("TO", "+8801712345678")
 SENDER_ID = os.environ.get("FROM", "ACME")
 CONCURRENCY = max(1, int(os.environ.get("CONCURRENCY", "10")))
+POLL_TIMEOUT = max(1.0, float(os.environ.get("POLL_TIMEOUT", "60")))
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://sms:sms@localhost:5432/sms")
+
+TERMINAL_STATUSES = frozenset({"DELIVERED", "UNDELIVERED", "EXPIRED", "FAILED"})
+POLL_INTERVAL_SECONDS = 0.5
 
 
 def postgres_dsn(url: str) -> str:
@@ -168,6 +177,34 @@ def check_concurrent(client: httpx.Client) -> tuple[bool, str]:
   )
 
 
+def check_terminal_state(client: httpx.Client) -> tuple[bool, str]:
+  """Send one message and poll until it reaches a terminal status."""
+  sent = send(client, unique_key("terminal"), "issue-21 terminal state")
+  message_id = sent.body.get("id")
+  if sent.status_code != 202 or not message_id:
+    return False, f"send returned {sent.status_code}: {sent.body.get('error')!r}"
+
+  started = time.monotonic()
+  deadline = started + POLL_TIMEOUT
+  status: str | None = None
+  error: str | None = None
+  while time.monotonic() < deadline:
+    try:
+      response = client.get(f"/v1/messages/{message_id}", headers={"X-API-Key": API_KEY})
+      if response.status_code == 200:
+        status = response.json().get("status")
+        if status in TERMINAL_STATUSES:
+          return True, f"{message_id} reached {status} in {time.monotonic() - started:.1f}s"
+      else:
+        error = f"GET {response.status_code}"
+    except httpx.HTTPError as exc:
+      error = f"GET failed: {exc}"
+    time.sleep(POLL_INTERVAL_SECONDS)
+
+  detail = f"last status {status!r}" if status is not None else (error or "no response")
+  return False, f"{message_id} not terminal within {POLL_TIMEOUT:.0f}s ({detail})"
+
+
 def fetch_tenant_status() -> list[TenantStatus]:
   query = """
     SELECT t.name,
@@ -220,7 +257,7 @@ def print_tenant_table(rows: list[TenantStatus]) -> None:
 
 
 def main() -> int:
-  print(f"Issue #7 smoke test against {BASE_URL}")
+  print(f"Smoke test against {BASE_URL}")
   print()
 
   with httpx.Client(base_url=BASE_URL, timeout=15.0) as client:
@@ -236,6 +273,7 @@ def main() -> int:
       ("replay", check_replay),
       ("conflict", check_conflict),
       ("concurrent", check_concurrent),
+      ("terminal", check_terminal_state),
     )
     results = [(name, *check(client)) for name, check in checks]
 

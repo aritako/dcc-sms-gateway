@@ -1,13 +1,21 @@
 name: dcc-sms-gateway
 
-# Shared by the gateway API and worker. The carrier gets its own settings later.
+# Shared by the gateway API, workers and the migrate/seed one-shots. The
+# carrier gets its own settings below; DLR_SECRET must match on both sides.
 x-gateway-env: &gateway-env
   DATABASE_URL: postgresql+asyncpg://sms:sms@postgres:5432/sms
   REDIS_URL: redis://redis:6379/0
   CARRIER_URL: http://carrier:8001
-  DLR_SECRET: dev-dlr-secret
-  ADMIN_API_KEY: dev-admin-key
+  DLR_SECRET: ${DLR_SECRET:-dev-dlr-secret}
+  ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-admin-key}
   CARRIER_SUBMIT_RATE: "45"
+
+# One image, shared by every gateway service. Scoping the tag to the compose
+# project keeps an isolated `-p` check from overwriting another project's image.
+x-gateway-service: &gateway-service
+  build: ./gateway
+  image: ${COMPOSE_PROJECT_NAME:-dcc-sms-gateway}-gateway
+  environment: *gateway-env
 
 services:
   postgres:
@@ -17,7 +25,7 @@ services:
       POSTGRES_PASSWORD: sms
       POSTGRES_DB: sms
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql
     healthcheck:
@@ -32,25 +40,40 @@ services:
       PGADMIN_DEFAULT_EMAIL: admin@admin.com
       PGADMIN_DEFAULT_PASSWORD: admin
     ports:
-      - "5050:80"
+      - "${PGADMIN_PORT:-5050}:80"
     depends_on:
       - postgres
 
   redis:
     image: redis:8-alpine
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
       timeout: 5s
       retries: 20
 
+  migrate:
+    <<: *gateway-service
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  seed:
+    <<: *gateway-service
+    command: ["python", "-m", "app.seed"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   api:
-    build: ./gateway
-    environment: *gateway-env
+    <<: *gateway-service
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     volumes:
       - ./gateway/app:/app/app
     command:
@@ -65,15 +88,28 @@ services:
         "--reload-dir",
         "/app/app",
       ]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')",
+        ]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      seed:
+        condition: service_completed_successfully
 
   worker:
-    build: ./gateway
-    environment: *gateway-env
+    <<: *gateway-service
     deploy:
       replicas: 3
     volumes:
@@ -88,19 +124,28 @@ services:
         "python -m app.worker.worker",
         "app",
       ]
+    # watchfiles owns PID 1 and keeps the worker command in its argv, so a
+    # process check on PID 1 is enough for a dev container.
+    healthcheck:
+      test: ["CMD-SHELL", "grep -q app.worker.worker /proc/1/cmdline"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      seed:
+        condition: service_completed_successfully
 
   carrier:
     build: ./carrier
     environment:
       GATEWAY_URL: http://api:8000
-      DLR_SECRET: dev-dlr-secret
+      DLR_SECRET: ${DLR_SECRET:-dev-dlr-secret}
     ports:
-      - "8001:8001"
+      - "${CARRIER_PORT:-8001}:8001"
     healthcheck:
       test:
         [
