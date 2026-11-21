@@ -58,9 +58,17 @@ jobs:
         working-directory: gateway
         run: uv run ruff check .
 
+      - name: Lint load script
+        working-directory: gateway
+        run: uv run ruff check ../scripts/load_test.py
+
       - name: Typecheck gateway
         working-directory: gateway
         run: uv run mypy app
+
+      - name: Typecheck load script
+        working-directory: gateway
+        run: uv run mypy ../scripts/load_test.py
 
       - name: Test gateway
         working-directory: gateway
