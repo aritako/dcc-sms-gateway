@@ -3,7 +3,8 @@
 
 Enqueues COUNT messages, waits for them to reach a terminal delivery state, then
 prints the numbers the acceptance criteria ask for: sustained throughput,
-retries, 429s, the worst one-second window and the final
+submit attempts and retries, timeout ambiguity, refunds and billing review,
+429s, the worst one-second window and the final
 DELIVERED/UNDELIVERED/EXPIRED/FAILED counts.
 
 Run from the repo root:
@@ -50,6 +51,24 @@ class CarrierStats:
   per_message: dict[str, int]
 
 
+@dataclass(frozen=True)
+class AttemptStats:
+  attempts: int
+  accepted: int
+  transient: int
+  ambiguous: int
+  permanent: int
+  retried_messages: int
+  max_attempt: int
+
+
+@dataclass(frozen=True)
+class BillingStats:
+  refunds: int
+  refunded_cents: int
+  review: int
+
+
 def carrier_dsn(url: str) -> str:
   return url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
@@ -91,6 +110,43 @@ def status_counts(connection: psycopg.Connection, ids: list[uuid.UUID]) -> dict[
     (ids,),
   ).fetchall()
   return dict(rows)
+
+
+def attempt_stats(connection: psycopg.Connection, ids: list[uuid.UUID]) -> AttemptStats:
+  row = connection.execute(
+    """
+    SELECT count(*),
+           count(*) FILTER (WHERE outcome = 'ACCEPTED'),
+           count(*) FILTER (WHERE outcome = 'TRANSIENT'),
+           count(*) FILTER (WHERE outcome = 'AMBIGUOUS'),
+           count(*) FILTER (WHERE outcome = 'PERMANENT'),
+           count(DISTINCT message_id) FILTER (WHERE attempt_number > 1),
+           coalesce(max(attempt_number), 0)
+      FROM submit_attempts
+     WHERE message_id = ANY(%s::uuid[])
+    """,
+    (ids,),
+  ).fetchone()
+  if row is None:
+    return AttemptStats(0, 0, 0, 0, 0, 0, 0)
+  return AttemptStats(*row)
+
+
+def billing_stats(connection: psycopg.Connection, ids: list[uuid.UUID]) -> BillingStats:
+  refunds, refunded_cents = connection.execute(
+    """
+    SELECT count(*), coalesce(sum(amount_cents), 0)
+      FROM ledger_entries
+     WHERE kind = 'REFUND' AND message_id = ANY(%s::uuid[])
+    """,
+    (ids,),
+  ).fetchone()
+  review = connection.execute(
+    "SELECT count(*) FROM messages "
+    "WHERE id = ANY(%s::uuid[]) AND billing_state = 'REVIEW'",
+    (ids,),
+  ).fetchone()[0]
+  return BillingStats(refunds, int(refunded_cents), review)
 
 
 def submitted_times(connection: psycopg.Connection, ids: list[uuid.UUID]) -> list[float]:
@@ -150,16 +206,17 @@ def main() -> int:
     after = read_carrier_stats(carrier)
     times = submitted_times(connection, ids)
     stuck = len(ids) - sum(total for status, total in counts.items() if status in TERMINAL)
+    gateway_attempts = attempt_stats(connection, ids)
+    billing = billing_stats(connection, ids)
 
     # Only this run's messages: the carrier store also holds earlier traffic.
     id_strings = {str(message_id) for message_id in ids}
-    attempts = {
+    carrier_attempts = {
       message_id: count
       for message_id, count in after.per_message.items()
       if str(message_id) in id_strings
     }
-    submits = sum(attempts.values())
-    retries = sum(1 for count in attempts.values() if count > 1)
+    submits = sum(carrier_attempts.values())
 
     rolling = max_in_window(times, WINDOW_SECONDS)
     calendar = max_in_calendar_second(times)
@@ -171,7 +228,16 @@ def main() -> int:
     print(f"drain            {drain_seconds:.2f}s")
     if drain_seconds:
       print(f"throughput       {len(ids) / drain_seconds:.1f}/s")
-    print(f"carrier submits  {submits} ({retries} messages retried)")
+    print(f"carrier submits  {submits}")
+    print(
+      f"attempts         {gateway_attempts.attempts}  "
+      f"(accepted {gateway_attempts.accepted}, transient {gateway_attempts.transient}, "
+      f"ambiguous {gateway_attempts.ambiguous}, permanent {gateway_attempts.permanent})"
+    )
+    print(f"retried          {gateway_attempts.retried_messages} messages")
+    print(f"timeouts         {gateway_attempts.ambiguous}  (ambiguous attempts)")
+    print(f"refunds          {billing.refunds}  ({billing.refunded_cents} cents)")
+    print(f"billing review   {billing.review}")
     print(f"carrier 429s     {rejected}")
     print(f"max rolling 1s   {rolling}  (recorded times, lag carrier receipt)")
     print(f"max calendar 1s  {calendar}  (recorded times)")

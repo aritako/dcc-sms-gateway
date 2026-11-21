@@ -17,7 +17,7 @@ from app.db.models import Message, MessageStatus
 
 
 async def message_row(session: AsyncSession, message_id) -> object:
-  """Status columns plus the lease, measured on the database clock."""
+  """Status columns plus the lease and retry clocks, measured on the database clock."""
   return (
     await session.execute(
       select(
@@ -25,6 +25,7 @@ async def message_row(session: AsyncSession, message_id) -> object:
         Message.carrier_id,
         Message.submitted_at,
         func.extract("epoch", Message.available_at - func.now()).label("due_in"),
+        Message.next_attempt_at,
       ).where(Message.id == message_id)
     )
   ).one()
@@ -113,7 +114,7 @@ async def test_dispatch_records_submitted_after_a_200(
   ]
 
 
-async def test_dispatch_releases_on_a_non_200(client, session) -> None:
+async def test_dispatch_schedules_a_retry_on_a_non_200(client, session) -> None:
   await create_tenant(session)
   message_id = (await send_message(client)).json()["id"]
   limiter = StubLimiter()
@@ -124,12 +125,16 @@ async def test_dispatch_releases_on_a_non_200(client, session) -> None:
   async with httpx.AsyncClient(transport=transport, base_url="http://carrier.test") as carrier:
     dispatcher = make_dispatcher(carrier, limiter)
     claimed = await dispatcher.claim()
+    retry_requested_at = datetime.now(UTC)
     await dispatcher.dispatch(claimed[0])
 
   row = await message_row(session, message_id)
   assert row.status == MessageStatus.QUEUED  # not terminal
   assert row.carrier_id is None and row.submitted_at is None
-  assert 4 < row.due_in <= 6  # retried in ~5 s, so no hot loop
+  # Retried after a jittered backoff of at most 1 s, so no hot loop.
+  assert row.next_attempt_at is not None
+  assert row.next_attempt_at > retry_requested_at
+  assert row.due_in > 20  # still leased while the retry waits
   assert await event_statuses(session, message_id) == [
     MessageStatus.ACCEPTED,
     MessageStatus.QUEUED,

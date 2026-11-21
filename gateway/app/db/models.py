@@ -50,6 +50,22 @@ class DlrState(StrEnum):
   REJECTED = "REJECTED"
 
 
+class BillingState(StrEnum):
+  """Whether a message's charge can be settled automatically."""
+
+  NORMAL = "NORMAL"
+  REVIEW = "REVIEW"
+
+
+class SubmitOutcome(StrEnum):
+  """What one carrier submit actually proved about acceptance."""
+
+  ACCEPTED = "ACCEPTED"
+  PERMANENT = "PERMANENT"
+  TRANSIENT = "TRANSIENT"
+  AMBIGUOUS = "AMBIGUOUS"
+
+
 class LedgerKind(StrEnum):
   CHARGE = "CHARGE"
   REFUND = "REFUND"
@@ -144,6 +160,10 @@ class Message(Base):
       name="ck_messages_total_price_arithmetic",
     ),
     CheckConstraint(_allowed_values("status", MessageStatus), name="ck_messages_status_valid"),
+    CheckConstraint(
+      _allowed_values("billing_state", BillingState),
+      name="ck_messages_billing_state_valid",
+    ),
     CheckConstraint("char_length(carrier) > 0", name="ck_messages_carrier_not_empty"),
     CheckConstraint(
       "carrier_id IS NULL OR char_length(carrier_id) > 0",
@@ -177,11 +197,16 @@ class Message(Base):
   status: Mapped[str] = mapped_column(
     String(16), default=MessageStatus.ACCEPTED.value, server_default=sa_text("'ACCEPTED'")
   )
+  billing_state: Mapped[str] = mapped_column(
+    String(16), default=BillingState.NORMAL.value, server_default=sa_text("'NORMAL'")
+  )
   carrier: Mapped[str] = mapped_column(String(64), server_default=sa_text("'default'"))
   carrier_id: Mapped[str | None] = mapped_column(Text)
   submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
   # Set once, by the first terminal transition (DLR or FAILED).
   final_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+  # When a retry becomes due; null means the message is not waiting on a retry.
+  next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
   available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
   updated_at: Mapped[datetime] = mapped_column(
@@ -209,6 +234,37 @@ class MessageEvent(Base):
   occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
   received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SubmitAttempt(Base):
+  """One real carrier submit, recorded after the HTTP call returns or times out."""
+
+  __tablename__ = "submit_attempts"
+  __table_args__ = (
+    CheckConstraint("attempt_number >= 1", name="ck_submit_attempts_number_positive"),
+    CheckConstraint(
+      _allowed_values("outcome", SubmitOutcome),
+      name="ck_submit_attempts_outcome_valid",
+    ),
+    CheckConstraint(
+      "http_status IS NULL OR http_status BETWEEN 100 AND 599",
+      name="ck_submit_attempts_http_status_valid",
+    ),
+    UniqueConstraint(
+      "message_id",
+      "attempt_number",
+      name="uq_submit_attempts_message_id_attempt_number",
+    ),
+  )
+
+  id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
+  message_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"))
+  attempt_number: Mapped[int] = mapped_column(Integer)
+  outcome: Mapped[str] = mapped_column(String(16))
+  http_status: Mapped[int | None] = mapped_column(Integer)
+  error: Mapped[str | None] = mapped_column(Text)
+  started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+  finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class DlrInbox(Base):

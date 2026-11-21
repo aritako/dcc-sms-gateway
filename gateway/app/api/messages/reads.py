@@ -107,6 +107,7 @@ class MessagesReader:
       encoding=message.encoding,
       carrier=message.carrier,
       carrier_id=message.carrier_id,
+      billing_state=message.billing_state,
       updated_at=message.updated_at,
       events=[
         MessageEventOut(id=event.id, status=event.status, created_at=event.created_at)

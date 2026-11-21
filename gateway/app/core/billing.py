@@ -1,6 +1,7 @@
 import uuid
 
-from sqlalchemy import insert, update
+from sqlalchemy import insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import LedgerEntry, LedgerKind, Tenant
@@ -54,3 +55,50 @@ class BillingService:
       )
     await self.db.execute(insert(LedgerEntry), entries)
     return balance_after
+
+  async def refund(
+    self, tenant_id: uuid.UUID, message_id: uuid.UUID, amount_cents: int
+  ) -> bool:
+    """Credit one message's charge back exactly once.
+
+    The tenant row lock keeps `balance_after_cents` truthful, and the unique
+    `(message_id, kind)` makes the ledger insert the arbiter: only the caller
+    whose insert wins credits the tenant, so duplicate finalisers cannot
+    double-refund. Returns False when a REFUND row already exists.
+    """
+    if amount_cents < 0:
+      raise ValueError("refund amount cannot be negative")
+    if amount_cents == 0:
+      # A free message has nothing to credit; FAILED must still commit.
+      return False
+
+    balance = await self.db.scalar(
+      select(Tenant.balance_cents).where(Tenant.id == tenant_id).with_for_update()
+    )
+    if balance is None:
+      raise ValueError(f"unknown tenant {tenant_id}")
+
+    new_balance = balance + amount_cents
+    refunded = await self.db.scalar(
+      pg_insert(LedgerEntry)
+      .values(
+        id=uuid.uuid7(),
+        tenant_id=tenant_id,
+        message_id=message_id,
+        kind=LedgerKind.REFUND,
+        amount_cents=amount_cents,
+        balance_after_cents=new_balance,
+      )
+      .on_conflict_do_nothing(index_elements=["message_id", "kind"])
+      .returning(LedgerEntry.id)
+    )
+    if refunded is None:
+      return False
+
+    await self.db.execute(
+      update(Tenant)
+      .where(Tenant.id == tenant_id)
+      .values(balance_cents=new_balance)
+      .execution_options(synchronize_session=False)
+    )
+    return True

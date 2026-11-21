@@ -194,13 +194,15 @@ class StubLimiter:
 
 
 def make_dispatcher(
-  carrier: httpx.AsyncClient | None, limiter: StubLimiter | None = None
+  carrier: httpx.AsyncClient | None,
+  limiter: StubLimiter | None = None,
+  **settings: object,
 ) -> Dispatcher:
   return Dispatcher(
     sessions=get_sessionmaker(),
     carrier_client=carrier,  # type: ignore[arg-type]  # claim tests never submit
     limiter=limiter or StubLimiter(),  # type: ignore[arg-type]
-    settings=get_settings(),
+    settings=get_settings().model_copy(update=settings),
   )
 
 

@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.db.models import Encoding, MessageStatus
+from app.db.models import BillingState, Encoding, MessageStatus
 
 # ASCII digits only, for phone verification
 E164_PATTERN = r"^\+[1-9][0-9]{1,14}$"
@@ -101,6 +101,7 @@ class MessageDetail(MessageSummary):
   encoding: Encoding
   carrier: str
   carrier_id: str | None
+  billing_state: BillingState
   updated_at: datetime
   events: list[MessageEventOut]
 

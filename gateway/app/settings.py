@@ -31,6 +31,14 @@ class Settings(BaseSettings):
   worker_retry_seconds: float = 5.0
   worker_idle_seconds: float = 0.25
 
+  # RETRY CONFIGS
+  # The default six attempts use 1, 2, 4, 8 and 16 s between attempts; the
+  # 30 s cap applies to longer configured ladders and the accepted-recovery loop.
+  max_submit_attempts: int = Field(default=6, ge=1)
+  # Exponential backoff with jitter: base, 2x, 4x, ... capped before jitter.
+  retry_backoff_base_seconds: float = Field(default=1.0, ge=0.1)
+  retry_backoff_cap_seconds: float = Field(default=30.0, gt=0)
+
 
 def load_settings(**kwargs: Any) -> Settings:
   """Build Settings, turning a missing variable into an actionable error."""
