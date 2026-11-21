@@ -28,11 +28,9 @@ from app.db.models import (
 from app.settings import Settings
 
 from .limiter import CarrierRateLimiter
+from .scheduler import CLAIMABLE, claim_query
 
 logger = logging.getLogger(__name__)
-
-# Statuses a worker may claim. Anything past these is owned by the carrier or final.
-CLAIMABLE = (MessageStatus.ACCEPTED, MessageStatus.QUEUED)
 
 # How often the worker looks for parked DLRs whose carrier id has since appeared.
 DLR_SWEEP_INTERVAL_SECONDS = 5.0
@@ -86,7 +84,7 @@ class Dispatcher:
     self.backoff_cap = settings.retry_backoff_cap_seconds
 
   async def claim(self) -> list[ClaimedMessage]:
-    """Lease up to `claim_size` due messages, mark them QUEUED and record the event.
+    """Lease up to `claim_size` due messages from the tenant-fair scheduler.
 
     One short transaction owns the whole claim: the SELECT takes a pessimistic
     row lock, the UPDATE starts the lease, and the commit drops both the lock and
@@ -94,16 +92,7 @@ class Dispatcher:
     workers off the row; a crash simply lets the lease expire. A waiting retry
     is due at `next_attempt_at`, and claiming clears it so the lease applies.
     """
-    due_at = func.coalesce(Message.next_attempt_at, Message.available_at)
-    due = (
-      select(Message.id)
-      .where(Message.status.in_(CLAIMABLE), due_at <= func.now())
-      # A batch shares one now(), so id (uuid7) breaks the tie and keeps the
-      # claim order stable and roughly oldest-first.
-      .order_by(due_at, Message.id)
-      .limit(self.claim_size)
-      .with_for_update(skip_locked=True)
-    )
+    due = claim_query(self.claim_size)
 
     async with self.sessions() as db:
       ids = (await db.execute(due)).scalars().all()

@@ -1,3 +1,5 @@
+import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -10,7 +12,7 @@ from helpers import (
   send_message,
   set_message,
 )
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Message, MessageStatus
@@ -81,6 +83,135 @@ async def test_claim_takes_released_queued_but_not_leased_or_finished(client, se
   assert await event_statuses(session, released) == [MessageStatus.ACCEPTED, MessageStatus.QUEUED]
   assert (await message_row(session, leased)).due_in > 250
   assert (await message_row(session, finished)).status == MessageStatus.SUBMITTED
+
+
+async def test_claim_serves_a_short_tenant_before_the_backlog(client, session) -> None:
+  await create_tenant(session, name="Campaign", api_key="campaign-key")
+  await create_tenant(session, name="Bank", api_key="bank-key")
+  campaign = [
+    uuid.UUID(message["id"])
+    for message in (await send_batch(client, 5, key="campaign-key")).json()["messages"]
+  ]
+  bank = [
+    uuid.UUID(message["id"])
+    for message in (await send_batch(client, 1, key="bank-key")).json()["messages"]
+  ]
+
+  dispatcher = make_dispatcher(None, worker_claim_size=4)
+  first = [message.id for message in await dispatcher.claim()]
+  second = [message.id for message in await dispatcher.claim()]
+
+  # The bank's single message is claimed with the campaign's first share, not
+  # after the campaign's whole backlog, and the campaign keeps FIFO within itself.
+  assert len(first) == 4
+  assert bank[0] in first
+  assert len(set(first) & set(campaign)) == 3
+  assert max(set(first) & set(campaign)) < min(set(second) & set(campaign))
+  assert set(second) == set(campaign) - set(first)
+
+
+async def test_claim_splits_equal_backlogs_evenly(client, session) -> None:
+  await create_tenant(session, name="Campaign", api_key="campaign-key")
+  await create_tenant(session, name="Bank", api_key="bank-key")
+  campaign = {
+    uuid.UUID(message["id"])
+    for message in (await send_batch(client, 10, key="campaign-key")).json()["messages"]
+  }
+  bank = {
+    uuid.UUID(message["id"])
+    for message in (await send_batch(client, 10, key="bank-key")).json()["messages"]
+  }
+
+  claimed = [message.id for message in await make_dispatcher(None, worker_claim_size=4).claim()]
+
+  assert len(set(claimed) & campaign) == 2
+  assert len(set(claimed) & bank) == 2
+
+
+async def test_claim_spreads_an_uneven_batch_across_tenants(client, session) -> None:
+  keys = ["a-key", "b-key", "c-key"]
+  for index, key in enumerate(keys):
+    await create_tenant(session, name=f"Tenant {index}", api_key=key)
+  tenants = {
+    key: {
+      uuid.UUID(message["id"])
+      for message in (await send_batch(client, 5, key=key)).json()["messages"]
+    }
+    for key in keys
+  }
+
+  claimed = [message.id for message in await make_dispatcher(None, worker_claim_size=4).claim()]
+  shares = sorted(len(set(claimed) & ids) for ids in tenants.values())
+
+  # 4 slots over 3 tenants: the earliest head (a-key) gets the extra slot.
+  assert shares == [1, 1, 2]
+  assert len(set(claimed) & tenants["a-key"]) == 2
+
+
+async def test_claim_gives_one_turn_when_tenants_outnumber_slots(client, session) -> None:
+  keys = ["a-key", "b-key", "c-key", "d-key", "e-key"]
+  for index, key in enumerate(keys):
+    await create_tenant(session, name=f"Tenant {index}", api_key=key)
+  tenants = {}
+  for key in keys:
+    response = await send_batch(client, 1, key=key)
+    tenants[key] = {uuid.UUID(message["id"]) for message in response.json()["messages"]}
+
+  claimed = [message.id for message in await make_dispatcher(None, worker_claim_size=4).claim()]
+
+  # Five tenants, four slots: four different tenants get one message each.
+  assert len(claimed) == 4
+  assert len(set(claimed)) == 4
+  assert sum(bool(set(claimed) & ids) for ids in tenants.values()) == 4
+
+
+async def test_three_workers_claim_disjoint_and_fair_batches(client, session) -> None:
+  await create_tenant(session, name="Campaign", api_key="campaign-key")
+  await create_tenant(session, name="Bank", api_key="bank-key")
+  campaign = {
+    uuid.UUID(message["id"])
+    for message in (await send_batch(client, 10, key="campaign-key")).json()["messages"]
+  }
+  bank = {
+    uuid.UUID(message["id"])
+    for message in (await send_batch(client, 10, key="bank-key")).json()["messages"]
+  }
+
+  workers = [make_dispatcher(None, worker_claim_size=4) for _ in range(3)]
+  batches = await asyncio.gather(*(worker.claim() for worker in workers))
+  claimed = [message.id for batch in batches for message in batch]
+
+  # SKIP LOCKED hands each row to exactly one worker, and every worker gets its
+  # two-message share per tenant, so the first three rounds are even.
+  assert len(claimed) == 12
+  assert len(claimed) == len(set(claimed))
+  assert len(set(claimed) & campaign) == 6
+  assert len(set(claimed) & bank) == 6
+
+
+async def test_claim_orders_a_due_retry_before_a_newer_first_attempt(client, session) -> None:
+  await create_tenant(session)
+  retry = (await send_message(client)).json()["id"]
+  fresh = (await send_message(client)).json()["id"]
+  await session.execute(
+    update(Message)
+    .where(Message.id == retry)
+    .values(
+      status=MessageStatus.QUEUED,
+      available_at=datetime.now(UTC) + timedelta(minutes=5),
+      next_attempt_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+  )
+  await session.commit()
+
+  dispatcher = make_dispatcher(None, worker_claim_size=1)
+  first = await dispatcher.claim()
+  second = await dispatcher.claim()
+
+  # The retry is due at next_attempt_at even though its old lease (available_at)
+  # is still in the future, so it goes before the newer first attempt.
+  assert [str(message.id) for message in first] == [retry]
+  assert [str(message.id) for message in second] == [fresh]
 
 
 async def test_dispatch_records_submitted_after_a_200(
