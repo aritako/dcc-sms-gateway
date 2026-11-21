@@ -108,7 +108,8 @@ make typecheck   # mypy
 ```
 
 CI runs lint, typecheck and both test suites. The gateway and carrier suites
-cover the seven mandated test scenarios; #22 owns the file-by-file test matrix.
+cover the seven mandated test scenarios; the file-by-file mapping is in
+[TEST_MATRIX.md](TEST_MATRIX.md).
 
 The captured 10k run is
 [scripts/load-output/2026-11-22-10k.txt](scripts/load-output/2026-11-22-10k.txt):
@@ -137,8 +138,10 @@ the 90% sample floor still passes.
 - [DESIGN.md](DESIGN.md) — the four required design questions, schema/locks,
   queue and retry policy, idempotency, DLR ordering, the 1,000/s limit and
   deferred work (#22).
-- [Test matrix (#22)](https://github.com/aritako/dcc-sms-gateway/issues/22) —
-  each mandated test mapped to its file and command.
+- [TEST_MATRIX.md](TEST_MATRIX.md) — each of the seven mandated tests mapped to
+  its file, test names and command.
+- [SUBMISSION.md](SUBMISSION.md) — reviewer checklist: how to run, test
+  commands, load proof, transcript and known limitations.
 - [transcript/README.md](transcript/README.md) — session-export rules and
   manifest; raw exports stay local and `transcripts.zip` is the submission
   artifact.
