@@ -17,7 +17,7 @@ CARRIER_STATUS_MAP: dict[str, MessageStatus] = {
 
 # A terminal DLR may follow any non-terminal state, but never FAILED or another
 # terminal: the first terminal outcome wins and the timeline never regresses.
-TERMINAL_PREDECESSORS = (
+NONTERMINAL_STATUS = (
   MessageStatus.ACCEPTED,
   MessageStatus.QUEUED,
   MessageStatus.SUBMITTED,
@@ -42,7 +42,7 @@ async def apply_terminal_dlr(
   applied = (
     await db.execute(
       update(Message)
-      .where(Message.id == message_id, Message.status.in_(TERMINAL_PREDECESSORS))
+      .where(Message.id == message_id, Message.status.in_(NONTERMINAL_STATUS))
       .values(
         status=status,
         final_at=func.coalesce(Message.final_at, func.now()),
