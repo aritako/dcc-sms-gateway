@@ -130,15 +130,13 @@ async def test_transient_503_then_200_delivers_once_without_refund(client, sessi
   async with carrier_client(handler) as carrier:
     dispatcher = make_dispatcher(carrier, limiter)
     claimed = await dispatcher.claim()
+    retry_requested_at = datetime.now(UTC)
     await dispatcher.dispatch(claimed[0])
 
     waiting = await fetch(session, message_id)
     assert waiting.status == MessageStatus.QUEUED  # never SUBMITTED -> QUEUED
     assert waiting.next_attempt_at is not None
-    retry_is_future = await session.scalar(
-      select(Message.next_attempt_at > func.now()).where(Message.id == UUID(message_id))
-    )
-    assert retry_is_future is True  # the waiting retry is not hot-looped
+    assert waiting.next_attempt_at > retry_requested_at  # not hot-looped
 
     await dispatcher.dispatch(claimed[0])
 
@@ -212,9 +210,11 @@ async def test_permanent_400_fails_after_one_attempt_with_one_refund(client, ses
   ]
 
   # A late 200 stores the carrier id as evidence but never rewrites the timeline.
+  # It also flags the already-refunded charge for billing review.
   await dispatcher.record_submitted(UUID(message_id), CARRIER_ID)
   still_failed = await fetch(session, message_id)
   assert still_failed.status == MessageStatus.FAILED
+  assert still_failed.billing_state == BillingState.REVIEW
   assert await event_statuses(session, message_id) == [
     MessageStatus.ACCEPTED,
     MessageStatus.QUEUED,
@@ -222,7 +222,38 @@ async def test_permanent_400_fails_after_one_attempt_with_one_refund(client, ses
   ]
 
   detail = await client.get(f"/v1/messages/{message_id}", headers={"X-API-Key": DEFAULT_KEY})
-  assert detail.json()["billing_state"] == "NORMAL"
+  assert detail.json()["billing_state"] == "REVIEW"
+
+
+async def test_permanent_400_after_a_timeout_is_definitive_and_refunds(client, session) -> None:
+  await create_tenant(session)
+  message_id = (await send_message(client)).json()["id"]
+  calls = 0
+
+  def handler(request: httpx.Request) -> httpx.Response:
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      raise httpx.ReadTimeout("carrier response lost", request=request)
+    return httpx.Response(400, json={"error": "INVALID_DESTINATION"})
+
+  async with carrier_client(handler) as carrier:
+    dispatcher = make_dispatcher(carrier)
+    claimed = await dispatcher.claim()
+    await dispatcher.dispatch(claimed[0])
+    await dispatcher.dispatch(claimed[0])
+
+  # The carrier dedupes by message_id: if the timed-out attempt had been
+  # accepted, this submit would have returned 200, not a permanent 400.
+  failed = await fetch(session, message_id)
+  assert failed.status == MessageStatus.FAILED
+  assert failed.billing_state == BillingState.NORMAL
+  assert [row.outcome for row in await attempts(session, message_id)] == [
+    SubmitOutcome.AMBIGUOUS,
+    SubmitOutcome.PERMANENT,
+  ]
+  assert len(await refunds(session)) == 1
+  assert await tenant_balance(session) == 10_000
 
 
 async def test_exhausting_transient_failures_fails_and_refunds_once(client, session) -> None:

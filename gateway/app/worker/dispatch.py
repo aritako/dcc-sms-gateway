@@ -187,6 +187,9 @@ class Dispatcher:
       message.id, outcome, response.status_code, error, started_at, finished_at
     )
     if outcome is SubmitOutcome.PERMANENT:
+      # A 400 is definitive: the carrier dedupes by message_id, so an accepted
+      # earlier attempt would have returned 200 instead. Refund even if a
+      # timeout is in the history.
       logger.info("submit of %s was permanently rejected (%s)", message.id, error)
       await self.fail(message.id, ambiguous=False)
     else:
@@ -246,7 +249,8 @@ class Dispatcher:
 
   def backoff(self, attempt_number: int) -> timedelta:
     """Exponential delay with jitter: base, 2x, 4x, ... up to the cap."""
-    seconds = min(self.backoff_cap, self.backoff_base * 2 ** (attempt_number - 1))
+    exponent = min(attempt_number - 1, 60)
+    seconds = min(self.backoff_cap, self.backoff_base * 2**exponent)
     return timedelta(seconds=seconds * random.uniform(MIN_JITTER_RATIO, 1.0))
 
   async def retry_or_fail(self, message_id: uuid.UUID) -> None:
@@ -368,6 +372,15 @@ class Dispatcher:
       ).scalar_one_or_none()
       if carrier is None:
         return
+      if status == MessageStatus.FAILED:
+        # A 200 after FAILED means the carrier accepted a message already
+        # refunded. Keep the terminal outcome, but flag the charge for review.
+        await db.execute(
+          update(Message)
+          .where(Message.id == message_id)
+          .values(billing_state=BillingState.REVIEW)
+          .execution_options(synchronize_session=False)
+        )
       if status not in (*CLAIMABLE, MessageStatus.SUBMITTED):
         # NEVER append SUBMITTED after a terminal outcome: the timeline and any
         # refund stand. Parked receipts are still rejected by the DLR sweep.
