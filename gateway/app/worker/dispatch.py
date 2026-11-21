@@ -272,12 +272,8 @@ class Dispatcher:
   async def retry_or_fail(self, message_id: uuid.UUID) -> None:
     """Schedule the next attempt, or settle the message once attempts run out.
 
-    Exhaustion with any ambiguous timeout leaves the charge alone and flags the
-    message for review, because the carrier may have delivered and billed that
-    attempt. Only definitive non-acceptance (a permanent rejection or every
-    attempt failing at the transport level) refunds the charge exactly once.
-    An ACCEPTED attempt is never failed: the retry budget keeps re-acquiring the
-    carrier id so a lost record_submitted transaction can still settle.
+    Ambiguous history goes to REVIEW with no refund; accepted history is never
+    failed and keeps retrying to recover the carrier id.
     """
     async with self.sessions() as db:
       outcomes = list(
