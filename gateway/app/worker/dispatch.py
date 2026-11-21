@@ -97,8 +97,11 @@ class Dispatcher:
 
     Within a tenant both parts order by due time, so first attempts stay FIFO and
     retries enter at `next_attempt_at`; a retry that is not due yet is invisible.
-    The shares are per claim, not persistent deficits: the next claim re-ranks,
-    so a tenant skipped by a locked head gets its turn then.
+    The shares are per claim, not persistent deficits. Locks are taken below each
+    tenant's LIMIT, so losing a row to another worker does not cost the tenant its
+    turn. When tenants outnumber the slots, the first `claim_size` by oldest head
+    get one each; a tenant with a large old backlog can stay in that prefix until
+    it drains, which is why a persisted last-served cursor is the post-MVP fix.
 
     One short transaction owns the whole claim: the SELECT takes a pessimistic
     row lock, the UPDATE starts the lease, and the commit drops both the lock and
