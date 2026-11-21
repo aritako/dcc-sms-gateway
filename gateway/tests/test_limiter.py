@@ -1,9 +1,10 @@
 import asyncio
 import time
 
+from helpers import max_in_any_second
+
 from app.db.redis import get_redis
 from app.worker.limiter import CarrierRateLimiter
-from tests.helpers import max_in_any_second
 
 
 async def test_permits_are_capped_per_slot() -> None:

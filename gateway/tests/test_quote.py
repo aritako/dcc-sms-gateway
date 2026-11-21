@@ -1,58 +1,25 @@
-from collections.abc import AsyncIterator
-
 import pytest
+from helpers import (
+  ADMIN_HEADERS,
+  DEFAULT_KEY,
+  assert_nothing_written,
+  create_tenant,
+  ensure_price,
+)
 from httpx import AsyncClient, Response
-from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_session
-from app.db.models import ApiKey, Encoding, LedgerEntry, Message, MessageEvent, Price, Tenant
-from app.security import hash_api_key
-
-TENANT_KEY = "test-tenant-key"
-ADMIN_KEY = "test-admin-key"  # matches ADMIN_API_KEY in conftest
 QUOTE_PATH = "/v1/messages/quote"
 BANGLADESH = "+8801712345678"
 
 
 @pytest.fixture
-async def session() -> AsyncIterator[AsyncSession]:
-  async for session in get_session():
-    yield session
-
-
-async def _create_tenant(
-  session: AsyncSession,
-  *,
-  name: str = "Acme",
-  currency: str = "USD",
-  api_key: str | None = TENANT_KEY,
-) -> Tenant:
-  tenant = Tenant(
-    name=name,
-    opening_balance_cents=10_000,
-    balance_cents=10_000,
-    currency=currency,
+async def tenant(session: AsyncSession):
+  return await create_tenant(
+    session,
+    name="Acme",
+    prices=(("+880", 3), ("+971", 5)),
   )
-  session.add(tenant)
-  await session.flush()
-  if api_key is not None:
-    session.add(ApiKey(tenant_id=tenant.id, key_hash=hash_api_key(api_key)))
-  await session.commit()
-  return tenant
-
-
-async def _add_price(session: AsyncSession, prefix: str, cents: int) -> None:
-  session.add(Price(prefix=prefix, price_per_segment_cents=cents))
-  await session.commit()
-
-
-@pytest.fixture
-async def tenant(session: AsyncSession) -> Tenant:
-  tenant = await _create_tenant(session)
-  await _add_price(session, "+880", 3)
-  await _add_price(session, "+971", 5)
-  return tenant
 
 
 async def _quote(
@@ -66,12 +33,12 @@ async def _quote(
   return await client.post(
     QUOTE_PATH,
     json={"to": to, "text": text, **fields},
-    headers={"x-api-key": TENANT_KEY} if headers is None else headers,
+    headers={"x-api-key": DEFAULT_KEY} if headers is None else headers,
   )
 
 
 async def test_quote_reports_encoding_segments_and_integer_cents(
-  client: AsyncClient, tenant: Tenant
+  client: AsyncClient, tenant
 ) -> None:
   response = await _quote(client)
 
@@ -89,41 +56,32 @@ async def test_quote_reports_encoding_segments_and_integer_cents(
   assert isinstance(body["total_price"], int)
 
 
-async def test_encoding_values_are_the_carrier_wire_enum(
-  client: AsyncClient, tenant: Tenant
+@pytest.mark.parametrize(
+  ("text", "encoding", "segments"),
+  [("a" * 161, "GSM7", 2), ("😀" * 36, "UCS2", 2)],
+)
+async def test_segments_multiply_the_price(
+  client: AsyncClient, tenant, text: str, encoding: str, segments: int
 ) -> None:
-  assert {member.value for member in Encoding} == {"GSM7", "UCS2"}
+  response = await _quote(client, text=text)
 
-  response = await _quote(client)
-
-  assert response.json()["encoding"] == Encoding.GSM7.value
-
-
-async def test_multiple_segments_multiply_the_price(client: AsyncClient, tenant: Tenant) -> None:
-  response = await _quote(client, text="a" * 161)
-
-  assert response.json()["segments"] == 2
-  assert response.json()["total_price"] == 6
+  body = response.json()
+  assert body["encoding"] == encoding
+  assert body["segments"] == segments
+  assert body["total_price"] == 3 * segments
 
 
-async def test_ucs2_text_quotes_per_segment(client: AsyncClient, tenant: Tenant) -> None:
-  response = await _quote(client, text="😀" * 36)
-
-  assert response.json()["encoding"] == "UCS2"
-  assert response.json()["segments"] == 2
-  assert response.json()["total_price"] == 6
-
-
-async def test_longest_matching_prefix_wins(
-  client: AsyncClient, session: AsyncSession, tenant: Tenant
+async def test_price_uses_the_longest_matching_prefix(
+  client: AsyncClient, session: AsyncSession, tenant
 ) -> None:
-  await _add_price(session, "+8801", 9)
+  await ensure_price(session, "+8801", 9)
+  await session.commit()
 
   assert (await _quote(client, to="+8801712345678")).json()["total_price"] == 9
   assert (await _quote(client, to="+8809123456789")).json()["total_price"] == 3
 
 
-async def test_quotes_the_second_seeded_prefix(client: AsyncClient, tenant: Tenant) -> None:
+async def test_price_matches_a_different_prefix(client: AsyncClient, tenant) -> None:
   response = await _quote(client, to="+971501234567")
 
   assert response.json()["price_per_segment"] == 5
@@ -131,103 +89,83 @@ async def test_quotes_the_second_seeded_prefix(client: AsyncClient, tenant: Tena
 
 
 async def test_currency_comes_from_the_tenant(
-  client: AsyncClient, session: AsyncSession, tenant: Tenant
+  client: AsyncClient, session: AsyncSession, tenant
 ) -> None:
-  await _create_tenant(session, name="Euro Bank", currency="EUR", api_key="eur-key")
+  await create_tenant(session, name="Euro Bank", currency="EUR", api_key="eur-key")
 
   response = await _quote(client, headers={"x-api-key": "eur-key"})
 
   assert response.json()["currency"] == "EUR"
 
 
-async def test_admin_key_quotes_for_the_named_tenant(client: AsyncClient, tenant: Tenant) -> None:
-  response = await _quote(client, headers={"x-admin-key": ADMIN_KEY}, tenant_id=str(tenant.id))
+async def test_admin_key_quotes_for_the_named_tenant(client: AsyncClient, tenant) -> None:
+  response = await _quote(client, headers=ADMIN_HEADERS, tenant_id=str(tenant.id))
 
   assert response.status_code == 200
   assert response.json()["currency"] == "USD"
 
 
-async def test_admin_key_requires_a_tenant_id(client: AsyncClient, tenant: Tenant) -> None:
-  response = await _quote(client, headers={"x-admin-key": ADMIN_KEY})
+async def test_admin_key_requires_a_tenant_id(client: AsyncClient, tenant) -> None:
+  response = await _quote(client, headers=ADMIN_HEADERS)
 
   assert response.status_code == 422
   assert response.json() == {"error": "TENANT_ID_REQUIRED"}
 
 
-async def test_admin_key_rejects_an_unknown_tenant(client: AsyncClient, tenant: Tenant) -> None:
+async def test_admin_key_rejects_an_unknown_tenant(client: AsyncClient, tenant) -> None:
   response = await _quote(
     client,
-    headers={"x-admin-key": ADMIN_KEY},
+    headers=ADMIN_HEADERS,
     tenant_id="00000000-0000-0000-0000-000000000000",
   )
 
   assert response.status_code == 404
 
 
-async def test_wrong_admin_key_is_unauthorized(client: AsyncClient, tenant: Tenant) -> None:
+@pytest.mark.parametrize("headers", [{}, {"x-api-key": "nope"}])
+async def test_quote_requires_a_valid_key(
+  client: AsyncClient, tenant, headers: dict[str, str]
+) -> None:
+  response = await _quote(client, headers=headers)
+
+  assert response.status_code == 401
+  assert response.json() == {"error": "UNAUTHORIZED"}
+
+
+async def test_wrong_admin_key_is_unauthorized(client: AsyncClient, tenant) -> None:
   response = await _quote(client, headers={"x-admin-key": "wrong"}, tenant_id=str(tenant.id))
 
   assert response.status_code == 401
 
 
-async def test_non_ascii_admin_key_is_unauthorized(client: AsyncClient, tenant: Tenant) -> None:
+async def test_non_ascii_admin_key_is_unauthorized(client: AsyncClient, tenant) -> None:
   # Latin-1 bytes reach the app as "café"; compare_digest on str would raise.
   response = await _quote(client, headers={"x-admin-key": b"caf\xe9"}, tenant_id=str(tenant.id))
 
   assert response.status_code == 401
 
 
-async def test_missing_credentials_are_unauthorized(client: AsyncClient, tenant: Tenant) -> None:
-  response = await _quote(client, headers={})
-
-  assert response.status_code == 401
-  assert response.json() == {"error": "UNAUTHORIZED"}
-
-
-async def test_unknown_api_key_is_unauthorized(client: AsyncClient, tenant: Tenant) -> None:
-  response = await _quote(client, headers={"x-api-key": "nope"})
-
-  assert response.status_code == 401
-
-
-async def test_unknown_destination_is_unsupported(client: AsyncClient, tenant: Tenant) -> None:
-  response = await _quote(client, to="+33123456789")
-
-  assert response.status_code == 422
-  assert response.json() == {"error": "UNSUPPORTED_DESTINATION"}
-
-
-async def test_empty_text_is_rejected(client: AsyncClient, tenant: Tenant) -> None:
-  response = await _quote(client, text="")
-
-  assert response.status_code == 422
-
-
-async def test_malformed_destination_is_rejected(client: AsyncClient, tenant: Tenant) -> None:
-  response = await _quote(client, to="08801712345678")
-
-  assert response.status_code == 422
-
-
-async def test_quote_writes_nothing(
-  client: AsyncClient, session: AsyncSession, tenant: Tenant
-) -> None:
-  assert (await _quote(client)).status_code == 200
-
-  for model in (Message, MessageEvent, LedgerEntry):
-    assert await session.scalar(select(func.count()).select_from(model)) == 0
-  balance = await session.scalar(select(Tenant.balance_cents).where(Tenant.id == tenant.id))
-  assert balance == 10_000
-
-
 @pytest.mark.parametrize(
-  ("to", "text"),
-  [("+33123456789", "hi"), ("+8801712345678", "")],
+  ("to", "text", "error"),
+  [
+    ("+33123456789", "hi", "UNSUPPORTED_DESTINATION"),
+    ("08801712345678", "hi", None),
+    (BANGLADESH, "", None),
+  ],
 )
-async def test_rejected_quotes_write_nothing(
-  client: AsyncClient, session: AsyncSession, tenant: Tenant, to: str, text: str
+async def test_quote_rejects_invalid_input_and_writes_nothing(
+  client: AsyncClient,
+  session: AsyncSession,
+  tenant,
+  to: str,
+  text: str,
+  error: str | None,
 ) -> None:
-  assert (await _quote(client, to=to, text=text)).status_code == 422
+  response = await _quote(client, to=to, text=text)
 
-  for model in (Message, MessageEvent, LedgerEntry):
-    assert await session.scalar(select(func.count()).select_from(model)) == 0
+  assert response.status_code == 422
+  if error is not None:
+    assert response.json() == {"error": error}
+  else:
+    assert "detail" in response.json()
+  await assert_nothing_written(session, tenant, 10_000)

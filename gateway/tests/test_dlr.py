@@ -4,10 +4,18 @@ from uuid import UUID
 
 import httpx
 import pytest
-from sqlalchemy import func, select, update
+from helpers import (
+  count,
+  create_tenant,
+  event_statuses,
+  make_dispatcher,
+  send_message,
+  set_message,
+  sign_dlr,
+)
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import get_sessionmaker
 from app.db.models import (
   DlrInbox,
   DlrState,
@@ -15,9 +23,6 @@ from app.db.models import (
   MessageEvent,
   MessageStatus,
 )
-from app.settings import get_settings
-from app.worker.dispatch import Dispatcher
-from tests.helpers import create_tenant, send_message, sign_dlr
 
 DLR_PATH = "/carrier/dlr"
 CARRIER_ID = "carrier-1"
@@ -43,20 +48,6 @@ async def post_dlr(client, body: bytes):
   return await client.post(DLR_PATH, content=body, headers=sign_dlr(body))
 
 
-class AllowAllLimiter:
-  async def acquire(self) -> None:
-    return None
-
-
-def make_dispatcher(carrier: httpx.AsyncClient | None) -> Dispatcher:
-  return Dispatcher(
-    sessions=get_sessionmaker(),
-    carrier_client=carrier,  # type: ignore[arg-type]  # sweeps never submit
-    limiter=AllowAllLimiter(),  # type: ignore[arg-type]
-    settings=get_settings(),
-  )
-
-
 def carrier_client(carrier_id: str = CARRIER_ID) -> httpx.AsyncClient:
   transport = httpx.MockTransport(
     lambda request: httpx.Response(200, json={"carrier_id": carrier_id})
@@ -64,59 +55,43 @@ def carrier_client(carrier_id: str = CARRIER_ID) -> httpx.AsyncClient:
   return httpx.AsyncClient(transport=transport, base_url="http://carrier.test")
 
 
-async def mark_submitted(
-  session: AsyncSession, message_id: UUID, carrier_id: str = CARRIER_ID
-) -> None:
-  """Put a message in the state a submit 200 would leave behind."""
-  await session.execute(
-    update(Message)
-    .where(Message.id == message_id)
-    .values(
-      status=MessageStatus.SUBMITTED,
-      carrier_id=carrier_id,
-      submitted_at=func.now(),
-    )
-  )
-  session.add(MessageEvent(message_id=message_id, status=MessageStatus.SUBMITTED))
-  await session.commit()
-
-
 async def row_counts(session: AsyncSession) -> tuple[int, int, int]:
   return (
-    await session.scalar(select(func.count()).select_from(Message)),
-    await session.scalar(select(func.count()).select_from(MessageEvent)),
-    await session.scalar(select(func.count()).select_from(DlrInbox)),
+    await count(session, Message),
+    await count(session, MessageEvent),
+    await count(session, DlrInbox),
   )
 
 
-async def event_statuses(session: AsyncSession, message_id: UUID) -> list[str]:
-  return list(
-    (
-      await session.execute(
-        select(MessageEvent.status)
-        .where(MessageEvent.message_id == message_id)
-        .order_by(MessageEvent.id)
-      )
-    )
-    .scalars()
-    .all()
+async def submitted(session: AsyncSession, message_id: UUID) -> None:
+  await set_message(
+    session,
+    message_id,
+    status=MessageStatus.SUBMITTED,
+    carrier_id=CARRIER_ID,
+    submitted_at=datetime.now(UTC),
   )
 
 
-async def test_missing_or_wrong_signature_is_401_with_no_writes(client, session) -> None:
+@pytest.mark.parametrize(
+  "headers",
+  [
+    {},
+    {"X-Signature": "0" * 64},
+    sign_dlr(dlr_body(), secret="not-the-secret"),
+  ],
+)
+async def test_bad_signature_is_401_and_writes_nothing(
+  client, session, headers: dict[str, str]
+) -> None:
   await create_tenant(session)
   message_id = UUID((await send_message(client)).json()["id"])
-  await mark_submitted(session, message_id)
+  await submitted(session, message_id)
   before = await row_counts(session)
-  body = dlr_body()
 
-  missing = await client.post(DLR_PATH, content=body)
-  wrong = await client.post(DLR_PATH, content=body, headers={"X-Signature": "0" * 64})
-  wrong_secret = await client.post(
-    DLR_PATH, content=body, headers=sign_dlr(body, secret="not-the-secret")
-  )
+  response = await client.post(DLR_PATH, content=dlr_body(), headers=headers)
 
-  assert [missing.status_code, wrong.status_code, wrong_secret.status_code] == [401, 401, 401]
+  assert response.status_code == 401
   assert await row_counts(session) == before
   message = await session.get(Message, message_id)
   assert message is not None and message.status == MessageStatus.SUBMITTED
@@ -135,7 +110,7 @@ async def test_terminal_codes_mark_the_message_with_both_timestamps(
 ) -> None:
   await create_tenant(session)
   message_id = UUID((await send_message(client)).json()["id"])
-  await mark_submitted(session, message_id)
+  await submitted(session, message_id)
 
   response = await post_dlr(client, dlr_body(status=wire_status))
 
@@ -165,7 +140,7 @@ async def test_terminal_codes_mark_the_message_with_both_timestamps(
 async def test_a_duplicate_dlr_writes_no_second_event_and_keeps_final_at(client, session) -> None:
   await create_tenant(session)
   message_id = UUID((await send_message(client)).json()["id"])
-  await mark_submitted(session, message_id)
+  await submitted(session, message_id)
   body = dlr_body()
 
   assert (await post_dlr(client, body)).status_code == 200
@@ -184,16 +159,21 @@ async def test_a_duplicate_dlr_writes_no_second_event_and_keeps_final_at(client,
     MessageStatus.SUBMITTED,
     MessageStatus.DELIVERED,
   ]
-  assert await session.scalar(select(func.count()).select_from(DlrInbox)) == 1
-  assert await session.scalar(select(func.count()).select_from(MessageEvent).where(
-    MessageEvent.message_id == message_id,
-    MessageEvent.status == MessageStatus.DELIVERED,
-  )) == 1
+  assert await count(session, DlrInbox) == 1
+  assert (
+    await session.scalar(
+      select(func.count())
+      .select_from(MessageEvent)
+      .where(
+        MessageEvent.message_id == message_id,
+        MessageEvent.status == MessageStatus.DELIVERED,
+      )
+    )
+    == 1
+  )
 
 
-async def test_early_dlr_is_parked_then_reconciled_by_the_submit_response(
-  client, session
-) -> None:
+async def test_early_dlr_is_parked_then_reconciled_by_the_submit_response(client, session) -> None:
   await create_tenant(session)
   message_id = UUID((await send_message(client)).json()["id"])
 
@@ -246,9 +226,12 @@ async def test_early_dlr_is_parked_then_reconciled_by_the_submit_response(
     MessageStatus.SUBMITTED,
     MessageStatus.DELIVERED,
   ]
-  assert await session.scalar(
-    select(func.count()).select_from(Message).where(Message.carrier_id == CARRIER_ID)
-  ) == 1
+  assert (
+    await session.scalar(
+      select(func.count()).select_from(Message).where(Message.carrier_id == CARRIER_ID)
+    )
+    == 1
+  )
 
 
 async def test_a_late_conflicting_terminal_is_rejected_and_does_not_regress(
@@ -256,7 +239,7 @@ async def test_a_late_conflicting_terminal_is_rejected_and_does_not_regress(
 ) -> None:
   await create_tenant(session)
   message_id = UUID((await send_message(client)).json()["id"])
-  await mark_submitted(session, message_id)
+  await submitted(session, message_id)
 
   assert (await post_dlr(client, dlr_body())).status_code == 200
   message = await session.get(Message, message_id)
@@ -275,11 +258,7 @@ async def test_a_late_conflicting_terminal_is_rejected_and_does_not_regress(
   assert message.final_at == delivered_at
   assert await event_statuses(session, message_id) == events_before
 
-  inboxes = (
-    (await session.execute(select(DlrInbox).order_by(DlrInbox.received_at)))
-    .scalars()
-    .all()
-  )
+  inboxes = (await session.execute(select(DlrInbox).order_by(DlrInbox.received_at))).scalars().all()
   assert [inbox.state for inbox in inboxes] == [DlrState.PROCESSED, DlrState.REJECTED]
   assert inboxes[1].rejection_reason is not None
 
@@ -292,17 +271,7 @@ async def test_sweep_reconciles_a_dlr_parked_before_the_carrier_id_was_saved(
   assert (await post_dlr(client, dlr_body())).json() == {"result": "PENDING"}
 
   # The worker saved the carrier id, but this DLR arrived just after its query.
-  await session.execute(
-    update(Message)
-    .where(Message.id == message_id)
-    .values(
-      status=MessageStatus.SUBMITTED,
-      carrier_id=CARRIER_ID,
-      submitted_at=func.now(),
-    )
-  )
-  session.add(MessageEvent(message_id=message_id, status=MessageStatus.SUBMITTED))
-  await session.commit()
+  await submitted(session, message_id)
 
   reconciled = await make_dispatcher(None).reconcile_parked_dlrs()
 
@@ -318,18 +287,21 @@ async def test_sweep_reconciles_a_dlr_parked_before_the_carrier_id_was_saved(
   ]
 
 
-async def test_invalid_status_or_body_is_400_with_no_writes(client, session) -> None:
+@pytest.mark.parametrize(
+  "body",
+  [
+    dlr_body(status="MAYBE"),
+    b'{"carrier_id": "carrier-1", "status": ',
+  ],
+)
+async def test_invalid_dlr_is_400_and_writes_nothing(client, session, body: bytes) -> None:
   await create_tenant(session)
   message_id = UUID((await send_message(client)).json()["id"])
-  await mark_submitted(session, message_id)
+  await submitted(session, message_id)
   before = await row_counts(session)
 
-  unknown_status = dlr_body(status="MAYBE")
-  broken_json = b'{"carrier_id": "carrier-1", "status": '
+  response = await client.post(DLR_PATH, content=body, headers=sign_dlr(body))
 
-  for body in (unknown_status, broken_json):
-    response = await client.post(DLR_PATH, content=body, headers=sign_dlr(body))
-    assert response.status_code == 400
-    assert response.json() == {"error": "INVALID_DLR"}
-
+  assert response.status_code == 400
+  assert response.json() == {"error": "INVALID_DLR"}
   assert await row_counts(session) == before
