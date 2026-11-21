@@ -12,7 +12,7 @@ from helpers import (
   send_message,
   set_message,
 )
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Message, MessageStatus
@@ -143,8 +143,9 @@ async def test_claim_spreads_an_uneven_batch_across_tenants(client, session) -> 
   claimed = [message.id for message in await make_dispatcher(None, worker_claim_size=4).claim()]
   shares = sorted(len(set(claimed) & ids) for ids in tenants.values())
 
-  # 4 slots over 3 tenants: one gets the extra slot, the other two get one each.
+  # 4 slots over 3 tenants: the earliest head (a-key) gets the extra slot.
   assert shares == [1, 1, 2]
+  assert len(set(claimed) & tenants["a-key"]) == 2
 
 
 async def test_claim_gives_one_turn_when_tenants_outnumber_slots(client, session) -> None:
@@ -186,6 +187,31 @@ async def test_three_workers_claim_disjoint_and_fair_batches(client, session) ->
   assert len(claimed) == len(set(claimed))
   assert len(set(claimed) & campaign) == 6
   assert len(set(claimed) & bank) == 6
+
+
+async def test_claim_orders_a_due_retry_before_a_newer_first_attempt(client, session) -> None:
+  await create_tenant(session)
+  retry = (await send_message(client)).json()["id"]
+  fresh = (await send_message(client)).json()["id"]
+  await session.execute(
+    update(Message)
+    .where(Message.id == retry)
+    .values(
+      status=MessageStatus.QUEUED,
+      available_at=datetime.now(UTC) + timedelta(minutes=5),
+      next_attempt_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+  )
+  await session.commit()
+
+  dispatcher = make_dispatcher(None, worker_claim_size=1)
+  first = await dispatcher.claim()
+  second = await dispatcher.claim()
+
+  # The retry is due at next_attempt_at even though its old lease (available_at)
+  # is still in the future, so it goes before the newer first attempt.
+  assert [str(message.id) for message in first] == [retry]
+  assert [str(message.id) for message in second] == [fresh]
 
 
 async def test_dispatch_records_submitted_after_a_200(
