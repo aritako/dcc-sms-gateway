@@ -1,0 +1,240 @@
+# Captured 10k load run for ticket #22.
+# Date: 2026-11-22 (run started 2026-11-21T17:25:32Z).
+# Environment: local Docker Compose stack, 3 workers, gateway limit 45/s, carrier limit 50/s.
+# The stack was not reset, so tenant balance/ledger totals include earlier runs; the "this run" lines are scoped to this run.
+# Command: uv run --project gateway python scripts/load_test.py 10000
+
+Load test load-20261121T172532Z-ce183cdc against http://localhost:8000
+  ShopFast campaign: 10,000 messages
+  Acme OTPs: one every 1s until the campaign settles
+  ShopFast batch 1: 1,000 accepted
+  ShopFast batch 2: 1,000 accepted
+  ShopFast batch 3: 1,000 accepted
+  ShopFast batch 4: 1,000 accepted
+  ShopFast batch 5: 1,000 accepted
+  ShopFast batch 6: 1,000 accepted
+  ShopFast batch 7: 1,000 accepted
+  ShopFast batch 8: 1,000 accepted
+  ShopFast batch 9: 1,000 accepted
+  ShopFast batch 10: 1,000 accepted
+  ShopFast: 92/10,000 final
+  ShopFast: 427/10,000 final
+  ShopFast: 780/10,000 final
+  ShopFast: 1,141/10,000 final
+  ShopFast: 1,519/10,000 final
+  ShopFast: 1,905/10,000 final
+  ShopFast: 2,276/10,000 final
+  ShopFast: 2,618/10,000 final
+  ShopFast: 2,965/10,000 final
+  ShopFast: 3,343/10,000 final
+  ShopFast: 3,723/10,000 final
+  ShopFast: 4,110/10,000 final
+  ShopFast: 4,438/10,000 final
+  ShopFast: 4,808/10,000 final
+  ShopFast: 5,154/10,000 final
+  ShopFast: 5,526/10,000 final
+  ShopFast: 5,889/10,000 final
+  ShopFast: 6,232/10,000 final
+  ShopFast: 6,595/10,000 final
+  ShopFast: 6,966/10,000 final
+  ShopFast: 7,295/10,000 final
+  ShopFast: 7,681/10,000 final
+  ShopFast: 8,072/10,000 final
+  ShopFast: 8,450/10,000 final
+  ShopFast: 8,825/10,000 final
+  ShopFast: 9,201/10,000 final
+  ShopFast: 9,601/10,000 final
+  ShopFast: 9,939/10,000 final
+  Acme OTP: 285/291 final
+
+DCC SMS gateway load test  (run load-20261121T172532Z-ce183cdc)
+  target          http://localhost:8000
+  campaign        ShopFast 10,000 messages, batches <= 1,000
+  OTPs            Acme Bank, one every 1s
+
+Timings
+  wall time                 300.1s
+  campaign enqueue          7.9s
+  average submit rate       37.0/s (10,721 submits over 290.1s of submit_attempts)
+  observed max submit rate  42/s (rolling 1s of attempt starts; carrier fixed-second max 42/s)
+  OTP accept->SUBMITTED     p50 0.993s  p95 2.341s  (n=290 of 291 submitted)
+
+Carrier counters for this run
+  submits                   10,721
+  429 / 503 / 400           0 / 315 / 87
+  timeouts                  115
+
+Final states
+  Acme Bank    DELIVERED 265  EXPIRED 6  FAILED 1  UNDELIVERED 19
+  ShopFast     DELIVERED 8,920  EXPIRED 291  FAILED 86  UNDELIVERED 703
+  total        10,291 messages, 0 not terminal
+
+Billing reconciliation
+  Acme Bank    balance 80,546 == opening 100,000 + ledger -19,454  [ok]
+    this run: ledger -870 across 291 messages (291 charges, 1 refunds)
+  ShopFast     balance 877,100 == opening 1,000,000 + ledger -122,900  [ok]
+    this run: ledger -29,742 across 10,000 messages (10,000 charges, 86 refunds)
+  charges                  wrong count 0, wrong amount 0
+  refunds                  wrong amount 0, ineligible 0, missing 0, duplicate 0
+  client refs              duplicate 0, missing 0
+  messages                 missing 0, review 0
+
+Checks
+  PASS  OTP p95: 2.341s <= 3s
+  PASS  OTP samples: 290/291 submitted (>=90%)
+  PASS  terminal states: 10,291/10,291 final
+  PASS  billing reconciliation: run and lifetime ledgers match balances
+
+Warnings
+  1 OTP(s) never reached SUBMITTED; p95 covers submitted OTPs only
+
+JSON
+{
+  "billing": {
+    "duplicate_client_refs": 0,
+    "duplicate_refunds": 0,
+    "ineligible_refunds": 0,
+    "missing_client_refs": 0,
+    "missing_messages": 0,
+    "review_messages": 0,
+    "tenants": [
+      {
+        "accounting_ok": true,
+        "balance": 80546,
+        "balance_before": 81416,
+        "ledger": -19454,
+        "ledger_before": -18584,
+        "lifetime_ok": true,
+        "name": "Acme Bank",
+        "ok": true,
+        "opening": 100000,
+        "other_ledger": 0,
+        "run_charges": 291,
+        "run_ledger": -870,
+        "run_messages": 291,
+        "run_refunds": 1
+      },
+      {
+        "accounting_ok": true,
+        "balance": 877100,
+        "balance_before": 906842,
+        "ledger": -122900,
+        "ledger_before": -93158,
+        "lifetime_ok": true,
+        "name": "ShopFast",
+        "ok": true,
+        "opening": 1000000,
+        "other_ledger": 0,
+        "run_charges": 10000,
+        "run_ledger": -29742,
+        "run_messages": 10000,
+        "run_refunds": 86
+      }
+    ],
+    "unrefunded_failures": 0,
+    "wrong_charge_amounts": 0,
+    "wrong_charge_counts": 0,
+    "wrong_refund_amounts": 0
+  },
+  "carrier": {
+    "active_submit_seconds": 290.05,
+    "avg_submit_rate": 36.963,
+    "max_attempts_per_second": 42,
+    "max_rps_since_start": 42,
+    "rate_window_source": "submit_attempts",
+    "recorded_attempts": 10721,
+    "run_submits": 10721,
+    "s400": 87,
+    "s429": 0,
+    "s503": 315,
+    "submits": 10721,
+    "timeouts": 115
+  },
+  "checks": [
+    [
+      "OTP p95",
+      true,
+      "2.341s <= 3s"
+    ],
+    [
+      "OTP samples",
+      true,
+      "290/291 submitted (>=90%)"
+    ],
+    [
+      "terminal states",
+      true,
+      "10,291/10,291 final"
+    ],
+    [
+      "billing reconciliation",
+      true,
+      "run and lifetime ledgers match balances"
+    ]
+  ],
+  "errors": [],
+  "messages": {
+    "by_tenant": {
+      "Acme Bank": {
+        "DELIVERED": 265,
+        "EXPIRED": 6,
+        "FAILED": 1,
+        "UNDELIVERED": 19
+      },
+      "ShopFast": {
+        "DELIVERED": 8920,
+        "EXPIRED": 291,
+        "FAILED": 86,
+        "UNDELIVERED": 703
+      }
+    },
+    "campaign": {
+      "sent": 10000,
+      "states": {
+        "DELIVERED": 8920,
+        "EXPIRED": 291,
+        "FAILED": 86,
+        "UNDELIVERED": 703
+      },
+      "terminal": true
+    },
+    "not_terminal": 0,
+    "otp": {
+      "sent": 291,
+      "states": {
+        "DELIVERED": 265,
+        "EXPIRED": 6,
+        "FAILED": 1,
+        "UNDELIVERED": 19
+      },
+      "terminal": true,
+      "unsubmitted": 1
+    },
+    "total": 10291
+  },
+  "ok": true,
+  "run": {
+    "base_url": "http://localhost:8000",
+    "batch_size": 1000,
+    "carrier_url": "http://localhost:8001",
+    "count": 10000,
+    "drain_timeout_seconds": 900.0,
+    "finished_at": "2026-11-21T17:30:33.312543+00:00",
+    "id": "load-20261121T172532Z-ce183cdc",
+    "otp_interval_seconds": 1.0,
+    "otp_p95_limit_seconds": 3.0,
+    "started_at": "2026-11-21T17:25:32.573957+00:00"
+  },
+  "timings": {
+    "enqueue_seconds": 7.924,
+    "otp_p50_seconds": 0.9927,
+    "otp_p95_seconds": 2.3406,
+    "otp_samples": 290,
+    "wall_seconds": 300.078
+  },
+  "warnings": [
+    "1 OTP(s) never reached SUBMITTED; p95 covers submitted OTPs only"
+  ]
+}
+
+PASS
