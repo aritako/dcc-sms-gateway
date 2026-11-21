@@ -1,12 +1,8 @@
 import asyncio
 import time
 
-import pytest
-from redis.asyncio import Redis
-from redis.exceptions import ConnectionError as RedisConnectionError
-
-from app.worker.limiter import CarrierRateLimiter
 from app.db.redis import get_redis
+from app.worker.limiter import CarrierRateLimiter
 from tests.helpers import max_in_any_second
 
 
