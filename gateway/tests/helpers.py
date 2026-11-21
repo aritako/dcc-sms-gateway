@@ -84,3 +84,13 @@ async def set_message(
   if status is not None:
     session.add(MessageEvent(message_id=message_id, status=status.value))
   await session.commit()
+
+def max_in_any_second(times: list[float]) -> int:
+  """Largest number of events inside any 1-second window (two pointers over sorted times)."""
+  times = sorted(times)
+  best, start = 0, 0
+  for end, t in enumerate(times):
+    while t - times[start] >= 1.0:
+      start += 1
+    best = max(best, end - start + 1)
+  return best
