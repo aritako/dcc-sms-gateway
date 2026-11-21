@@ -10,6 +10,7 @@ from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.dlr import lock_pending_receipts, reconcile_dlr, sweep_parked_dlrs
 from app.db.models import Message, MessageEvent, MessageStatus
 from app.settings import Settings
 
@@ -19,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 # Statuses a worker may claim. Anything past these is owned by the carrier or final.
 CLAIMABLE = (MessageStatus.ACCEPTED, MessageStatus.QUEUED)
+
+# How often the worker looks for parked DLRs whose carrier id has since appeared.
+DLR_SWEEP_INTERVAL_SECONDS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,26 +143,51 @@ class Dispatcher:
   async def record_submitted(self, message_id: uuid.UUID, carrier_id: str) -> None:
     """Move to SUBMITTED only from ACCEPTED/QUEUED: a status that an early DLR (or any
     other path) already moved further is kept. carrier_id and submitted_at are filled
-    in if missing either way, so a late submit response still links the DLR."""
+    in if missing either way, so a late submit response still links the DLR.
+
+    Any DLR parked for this carrier id is reconciled here, in the same transaction:
+    its SUBMITTED event is recorded first, then the terminal outcome is applied.
+    """
     async with self.sessions() as db:
-      await db.execute(
-        update(Message)
-        .where(Message.id == message_id)
-        .values(
-          status=case(
-            (Message.status.in_(CLAIMABLE), MessageStatus.SUBMITTED), else_=Message.status
-          ),
-          carrier_id=func.coalesce(Message.carrier_id, carrier_id),
-          submitted_at=func.coalesce(Message.submitted_at, func.now()),
+      carrier = (
+        await db.execute(
+          update(Message)
+          .where(Message.id == message_id)
+          .values(
+            status=case(
+              (Message.status.in_(CLAIMABLE), MessageStatus.SUBMITTED), else_=Message.status
+            ),
+            carrier_id=func.coalesce(Message.carrier_id, carrier_id),
+            submitted_at=func.coalesce(Message.submitted_at, func.now()),
+          )
+          .returning(Message.carrier)
+          .execution_options(synchronize_session=False)
         )
-        .execution_options(synchronize_session=False)
-      )
+      ).scalar_one_or_none()
+      if carrier is None:
+        return
+
+      pending_receipts = await lock_pending_receipts(db, carrier, carrier_id)
       await db.execute(
         pg_insert(MessageEvent)
-        .values(id=uuid.uuid7(), message_id=message_id, status=MessageStatus.SUBMITTED)
+        .values(
+          id=uuid.uuid7(),
+          message_id=message_id,
+          status=MessageStatus.SUBMITTED,
+          source="dlr" if pending_receipts else "gateway",
+        )
         .on_conflict_do_nothing(index_elements=["message_id", "status"])
       )
+      for inbox in pending_receipts:
+        await reconcile_dlr(db, message_id, inbox)
       await db.commit()
+
+  async def reconcile_parked_dlrs(self) -> int:
+    """One sweep for early DLRs that lost the race with the submit response."""
+    async with self.sessions() as db:
+      reconciled = await sweep_parked_dlrs(db)
+      await db.commit()
+    return reconciled
 
   async def release(self, message_id: uuid.UUID) -> None:
     """Hand the message back after a delay, with no status change (no hot loop)."""
@@ -184,8 +213,17 @@ class Dispatcher:
     return len(claimed)
 
   async def run(self, idle_seconds: float) -> None:
+    loop = asyncio.get_running_loop()
+    last_sweep = 0.0
     while True:
       try:
+        if loop.time() - last_sweep >= DLR_SWEEP_INTERVAL_SECONDS:
+          last_sweep = loop.time()
+          try:
+            await self.reconcile_parked_dlrs()
+          except Exception:
+            # A sweep failure must not stop submissions; the next one retries.
+            logger.exception("DLR sweep failed")
         if await self.run_once() == 0:
           await asyncio.sleep(idle_seconds)
       except Exception:

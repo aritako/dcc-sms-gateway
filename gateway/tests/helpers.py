@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 from datetime import datetime
 from uuid import UUID
 
@@ -10,7 +12,13 @@ from app.security import hash_api_key
 
 ADMIN_HEADERS = {"X-Admin-Key": "test-admin-key"}
 DEFAULT_KEY = "dcc_test_api_key"
+DLR_SECRET = "test-dlr-secret"
 MESSAGE = {"to": "+8801712345678", "from": "ACME", "text": "hello"}
+
+
+def sign_dlr(body: bytes, *, secret: str = DLR_SECRET) -> dict[str, str]:
+  """Headers for a DLR whose signature covers exactly `body`, as the carrier sends it."""
+  return {"X-Signature": hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()}
 
 
 async def create_tenant(

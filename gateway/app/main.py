@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app.api.balance import controller as balance
+from app.api.dlr import controller as dlr
 from app.api.errors import ApiError
 from app.api.ledger import controller as ledger
 from app.api.messages import controller
@@ -45,6 +46,8 @@ v1_router.include_router(balance.router, tags=["balance"])
 v1_router.include_router(ledger.router, tags=["ledger"])
 v1_router.include_router(stats.router, tags=["stats"])
 app.include_router(v1_router)
+# Carrier-facing callbacks live outside /v1 so the carrier contract stays separate.
+app.include_router(dlr.router, prefix="/carrier", tags=["carrier"])
 
 
 @app.get("/")

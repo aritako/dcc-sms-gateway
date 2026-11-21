@@ -41,6 +41,15 @@ class Encoding(StrEnum):
   UCS2 = "UCS2"
 
 
+class DlrState(StrEnum):
+  """Lifecycle of a row in `dlr_inbox`, from parked to settled."""
+
+  PENDING = "PENDING"
+  PROCESSED = "PROCESSED"
+  RECONCILED = "RECONCILED"
+  REJECTED = "REJECTED"
+
+
 class LedgerKind(StrEnum):
   CHARGE = "CHARGE"
   REFUND = "REFUND"
@@ -171,6 +180,8 @@ class Message(Base):
   carrier: Mapped[str] = mapped_column(String(64), server_default=sa_text("'default'"))
   carrier_id: Mapped[str | None] = mapped_column(Text)
   submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+  # Set once, by the first terminal transition (DLR or FAILED).
+  final_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
   available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
   updated_at: Mapped[datetime] = mapped_column(
@@ -192,7 +203,51 @@ class MessageEvent(Base):
   id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
   message_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"))
   status: Mapped[str] = mapped_column(String(16))
+  # "gateway" for states this service produced, "dlr" for a carrier receipt.
+  source: Mapped[str] = mapped_column(String(16), server_default=sa_text("'gateway'"))
+  # Carrier-reported time and the gateway's receipt time; null for gateway events.
+  occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+  received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
   created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DlrInbox(Base):
+  """Every received delivery receipt, including those parked before a carrier id exists.
+
+  The message row stays the source of truth for delivery status. This table is
+  the durable receipt log and the parking queue for early receipts: its unique
+  key identifies a receipt, and `state` records what happened to it.
+  """
+
+  __tablename__ = "dlr_inbox"
+  __table_args__ = (
+    UniqueConstraint(
+      "carrier",
+      "carrier_id",
+      "status",
+      "occurred_at",
+      name="uq_dlr_inbox_carrier_carrier_id_status_occurred_at",
+    ),
+    CheckConstraint(
+      "status IN ('DELIVERED', 'UNDELIVERED', 'EXPIRED')",
+      name="ck_dlr_inbox_status_terminal",
+    ),
+    CheckConstraint(_allowed_values("state", DlrState), name="ck_dlr_inbox_state_valid"),
+    CheckConstraint("char_length(carrier) > 0", name="ck_dlr_inbox_carrier_not_empty"),
+    CheckConstraint("char_length(carrier_id) > 0", name="ck_dlr_inbox_carrier_id_not_empty"),
+    Index("idx_dlr_inbox_state_carrier_carrier_id", "state", "carrier", "carrier_id"),
+  )
+
+  id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid7)
+  carrier: Mapped[str] = mapped_column(String(64), server_default=sa_text("'default'"))
+  carrier_id: Mapped[str] = mapped_column(Text)
+  status: Mapped[str] = mapped_column(String(16))
+  occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+  received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+  state: Mapped[str] = mapped_column(
+    String(16), default=DlrState.PENDING.value, server_default=sa_text("'PENDING'")
+  )
+  rejection_reason: Mapped[str | None] = mapped_column(Text)
 
 
 class LedgerEntry(Base):

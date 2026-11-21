@@ -217,6 +217,7 @@ async def test_required_indexes_exist() -> None:
     "idx_message_events_message_id_id",
     "idx_ledger_entries_tenant_id_created_at",
     "idx_messages_carrier_carrier_id",
+    "idx_dlr_inbox_state_carrier_carrier_id",
   }
 
   async with get_engine().connect() as connection:
