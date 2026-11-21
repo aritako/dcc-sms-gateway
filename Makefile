@@ -3,7 +3,9 @@ include .env
 export
 endif
 
-.PHONY: dev migrate seed test test-all lint typecheck
+.PHONY: dev migrate seed test test-all lint typecheck load run-1k
+
+COUNT ?= 1000
 
 dev: ## Start Postgres and Redis in the background
 	docker compose up -d postgres redis
@@ -26,3 +28,9 @@ lint: ## Lint the gateway
 
 typecheck: ## Type-check the gateway
 	cd gateway && uv run mypy app
+
+load: ## Enqueue COUNT messages through the API (default 1000)
+	uv run --project gateway python scripts/send.py $(COUNT)
+
+run-1k: ## Recorded COUNT-message dispatch run, with a PASS/FAIL verdict
+	uv run --project gateway python scripts/run_1k.py $(COUNT)

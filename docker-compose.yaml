@@ -7,7 +7,7 @@ x-gateway-env: &gateway-env
   CARRIER_URL: http://carrier:8001
   DLR_SECRET: dev-dlr-secret
   ADMIN_API_KEY: dev-admin-key
-  CARRIER_SUBMIT_RATE: "20"
+  CARRIER_SUBMIT_RATE: "45"
 
 services:
   postgres:
@@ -25,6 +25,16 @@ services:
       interval: 2s
       timeout: 5s
       retries: 20
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
 
   redis:
     image: redis:8-alpine
