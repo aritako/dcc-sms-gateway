@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import httpx
+import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -121,25 +122,35 @@ async def test_missing_or_wrong_signature_is_401_with_no_writes(client, session)
   assert message is not None and message.status == MessageStatus.SUBMITTED
 
 
-async def test_delivrd_marks_the_message_delivered_with_both_timestamps(client, session) -> None:
+@pytest.mark.parametrize(
+  ("wire_status", "expected"),
+  [
+    ("DELIVRD", MessageStatus.DELIVERED),
+    ("UNDELIV", MessageStatus.UNDELIVERED),
+    ("EXPIRED", MessageStatus.EXPIRED),
+  ],
+)
+async def test_terminal_codes_mark_the_message_with_both_timestamps(
+  client, session, wire_status: str, expected: MessageStatus
+) -> None:
   await create_tenant(session)
   message_id = UUID((await send_message(client)).json()["id"])
   await mark_submitted(session, message_id)
 
-  response = await post_dlr(client, dlr_body())
+  response = await post_dlr(client, dlr_body(status=wire_status))
 
   assert response.status_code == 200
   assert response.json() == {"result": "PROCESSED"}
   message = await session.get(Message, message_id)
   assert message is not None
-  assert message.status == MessageStatus.DELIVERED
+  assert message.status == expected
   assert message.final_at is not None
 
   event = (
     await session.execute(
       select(MessageEvent).where(
         MessageEvent.message_id == message_id,
-        MessageEvent.status == MessageStatus.DELIVERED,
+        MessageEvent.status == expected,
       )
     )
   ).scalar_one()
