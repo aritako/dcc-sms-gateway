@@ -10,8 +10,8 @@ from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.dlr import lock_pending_dlrs, settle_dlrs, sweep_parked_dlrs
-from app.db.models import DlrState, Message, MessageEvent, MessageStatus
+from app.core.dlr import lock_pending_dlrs, reconcile_dlr, sweep_parked_dlrs
+from app.db.models import Message, MessageEvent, MessageStatus
 from app.settings import Settings
 
 from .limiter import CarrierRateLimiter
@@ -167,7 +167,7 @@ class Dispatcher:
       if carrier is None:
         return
 
-      pending = await lock_pending_dlrs(db, carrier=carrier, carrier_id=carrier_id)
+      pending = await lock_pending_dlrs(db, carrier, carrier_id)
       await db.execute(
         pg_insert(MessageEvent)
         .values(
@@ -178,7 +178,8 @@ class Dispatcher:
         )
         .on_conflict_do_nothing(index_elements=["message_id", "status"])
       )
-      await settle_dlrs(db, message_id, pending, state=DlrState.RECONCILED)
+      for inbox in pending:
+        await reconcile_dlr(db, message_id, inbox)
       await db.commit()
 
   async def reconcile_parked_dlrs(self) -> int:

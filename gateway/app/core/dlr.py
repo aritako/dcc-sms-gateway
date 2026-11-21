@@ -25,11 +25,13 @@ NONTERMINAL_STATUS = (
 
 ALREADY_TERMINAL = "MESSAGE_ALREADY_TERMINAL"
 
+# Enough parked receipts to close a race without holding a long transaction.
+SWEEP_LIMIT = 50
+
 
 async def apply_terminal_dlr(
   db: AsyncSession,
   message_id: uuid.UUID,
-  *,
   status: MessageStatus,
   occurred_at: datetime,
   received_at: datetime,
@@ -71,7 +73,7 @@ async def apply_terminal_dlr(
 
 
 async def lock_pending_dlrs(
-  db: AsyncSession, *, carrier: str, carrier_id: str
+  db: AsyncSession, carrier: str, carrier_id: str
 ) -> Sequence[DlrInbox]:
   """Parked receipts for this carrier id, locked so only one reconciler applies them."""
   rows = (
@@ -89,32 +91,24 @@ async def lock_pending_dlrs(
   return rows.all()
 
 
-async def settle_dlrs(
-  db: AsyncSession,
-  message_id: uuid.UUID,
-  rows: Sequence[DlrInbox],
-  *,
-  state: DlrState,
-) -> int:
-  """Apply parked receipts to `message_id` and record the outcome on each row."""
-  applied_count = 0
-  for inbox in rows:
-    applied = await apply_terminal_dlr(
-      db,
-      message_id,
-      status=MessageStatus(inbox.status),
-      occurred_at=inbox.occurred_at,
-      received_at=inbox.received_at,
-    )
-    inbox.state = (state if applied else DlrState.REJECTED).value
-    inbox.rejection_reason = None if applied else ALREADY_TERMINAL
-    applied_count += int(applied)
-  return applied_count
+async def reconcile_dlr(
+  db: AsyncSession, message_id: uuid.UUID, inbox: DlrInbox
+) -> bool:
+  """Apply one parked receipt and record the outcome on its inbox row."""
+  applied = await apply_terminal_dlr(
+    db,
+    message_id,
+    MessageStatus(inbox.status),
+    inbox.occurred_at,
+    inbox.received_at,
+  )
+  inbox.state = (DlrState.RECONCILED if applied else DlrState.REJECTED).value
+  inbox.rejection_reason = None if applied else ALREADY_TERMINAL
+  return applied
 
 
 async def ingest_dlr(
   db: AsyncSession,
-  *,
   carrier: str,
   carrier_id: str,
   status: MessageStatus,
@@ -149,15 +143,12 @@ async def ingest_dlr(
     )
   )
   if message_id is None:
-    # The submit response has not stored the carrier id yet; keep it parked.
+    # The carrier's DLR can beat the submit 200, so the message may not have
+    # carrier_id yet; park it until the worker saves the id.
     return "PARKED"
 
   applied = await apply_terminal_dlr(
-    db,
-    message_id,
-    status=status,
-    occurred_at=occurred_at,
-    received_at=inbox.received_at,
+    db, message_id, status, occurred_at, inbox.received_at
   )
   await db.execute(
     update(DlrInbox)
@@ -171,7 +162,7 @@ async def ingest_dlr(
   return "APPLIED" if applied else "REJECTED"
 
 
-async def sweep_parked_dlrs(db: AsyncSession, *, limit: int = 50) -> int:
+async def sweep_parked_dlrs(db: AsyncSession) -> int:
   """Reconcile parked receipts whose carrier id has appeared since they arrived.
 
   This closes the insert-after-query race between a DLR and the submit response.
@@ -189,19 +180,11 @@ async def sweep_parked_dlrs(db: AsyncSession, *, limit: int = 50) -> int:
       )
       .where(DlrInbox.state == DlrState.PENDING.value)
       .order_by(DlrInbox.received_at, DlrInbox.id)
-      .limit(limit)
+      .limit(SWEEP_LIMIT)
       .with_for_update(of=DlrInbox, skip_locked=True)
     )
   ).all()
 
   for inbox, message_id in rows:
-    applied = await apply_terminal_dlr(
-      db,
-      message_id,
-      status=MessageStatus(inbox.status),
-      occurred_at=inbox.occurred_at,
-      received_at=inbox.received_at,
-    )
-    inbox.state = (DlrState.RECONCILED if applied else DlrState.REJECTED).value
-    inbox.rejection_reason = None if applied else ALREADY_TERMINAL
+    await reconcile_dlr(db, message_id, inbox)
   return len(rows)
