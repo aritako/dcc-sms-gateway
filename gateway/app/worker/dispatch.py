@@ -222,12 +222,14 @@ class Dispatcher:
       )
       if locked is None:
         return
-      attempt_number = await db.scalar(
-        select(func.coalesce(func.max(SubmitAttempt.attempt_number), 0) + 1).where(
-          SubmitAttempt.message_id == message_id
+      attempt_number = (
+        await db.scalar(
+          select(func.coalesce(func.max(SubmitAttempt.attempt_number), 0) + 1).where(
+            SubmitAttempt.message_id == message_id
+          )
         )
+        or 1
       )
-      assert attempt_number is not None  # coalesce(..., 0) + 1 is never null
       db.add(
         SubmitAttempt(
           id=uuid.uuid7(),
