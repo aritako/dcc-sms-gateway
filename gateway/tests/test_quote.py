@@ -38,7 +38,7 @@ async def _quote(
 
 
 async def test_quote_reports_encoding_segments_and_integer_cents(
-  client: AsyncClient, tenant
+  client: AsyncClient, session: AsyncSession, tenant
 ) -> None:
   response = await _quote(client)
 
@@ -54,6 +54,8 @@ async def test_quote_reports_encoding_segments_and_integer_cents(
   # 3.0 == 3 in Python, so the equality above does not prove integer cents.
   assert isinstance(body["price_per_segment"], int)
   assert isinstance(body["total_price"], int)
+  # A quote never charges or records a message.
+  await assert_nothing_written(session, tenant, 10_000)
 
 
 @pytest.mark.parametrize(

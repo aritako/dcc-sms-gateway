@@ -17,6 +17,16 @@ async def _stats(
 
 
 async def test_stats_zero_fills_every_status(client: AsyncClient, tenant) -> None:
+  # Pin the public status vocabulary; the expected counts derive from the enum.
+  assert set(ALL_STATUSES) == {
+    "ACCEPTED",
+    "QUEUED",
+    "SUBMITTED",
+    "DELIVERED",
+    "UNDELIVERED",
+    "EXPIRED",
+    "FAILED",
+  }
   response = await _stats(client)
 
   assert response.status_code == 200

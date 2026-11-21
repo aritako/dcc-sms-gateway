@@ -89,16 +89,12 @@ async def send_batch(
   *,
   items: list[dict[str, str]] | None = None,
   key: str = DEFAULT_KEY,
-  refs: list[str] | None = None,
   idempotency_key: str | None = None,
 ) -> Response:
   if items is None:
     if count is None:
       raise TypeError("send_batch needs count or items")
-    if refs is not None:
-      items = [{**MESSAGE, "client_ref": refs[index]} for index in range(count)]
-    else:
-      items = batch_items(count)
+    items = batch_items(count)
   headers = {"X-API-Key": key}
   if idempotency_key is not None:
     headers["Idempotency-Key"] = idempotency_key

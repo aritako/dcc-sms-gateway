@@ -23,11 +23,13 @@ async def test_reads_require_a_valid_key(
 
 
 @pytest.mark.parametrize("path", READ_PATHS)
+@pytest.mark.parametrize("target", ["own", "foreign"])
 async def test_reads_reject_a_tenant_key_that_names_a_tenant(
-  client: AsyncClient, tenant, path: str
+  client: AsyncClient, tenant, path: str, target: str
 ) -> None:
+  tenant_id = tenant.id if target == "own" else uuid4()
   response = await client.get(
-    path, params={"tenant_id": str(tenant.id)}, headers={"X-API-Key": DEFAULT_KEY}
+    path, params={"tenant_id": str(tenant_id)}, headers={"X-API-Key": DEFAULT_KEY}
   )
 
   assert response.status_code == 403

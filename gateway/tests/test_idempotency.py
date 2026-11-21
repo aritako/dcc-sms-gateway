@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 from helpers import (
+  assert_nothing_written,
   balance_of,
   count,
   create_tenant,
@@ -37,10 +38,7 @@ async def test_invalid_idempotency_key_is_422_and_writes_nothing(
   response = await send_message(client, idempotency_key=key)
 
   assert response.status_code == 422
-  assert await count(session, Message) == 0
-  assert await count(session, MessageEvent) == 0
-  assert await count(session, LedgerEntry) == 0
-  assert await balance_of(session, tenant) == 10_000
+  await assert_nothing_written(session, tenant, 10_000)
 
 
 async def test_same_key_with_different_body_is_409_and_writes_nothing(

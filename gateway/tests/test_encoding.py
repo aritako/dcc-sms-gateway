@@ -7,7 +7,7 @@ from app.db.models import Encoding
 service = EncodingService()
 
 
-def test_table_is_the_full_gsm_03_38_alphabet() -> None:
+def test_gsm_tables_are_the_full_03_38_alphabet() -> None:
   # 128 septet values, minus 0x1B which is the escape into the extension table.
   assert len(GSM7_BASIC) == 127
   assert len(GSM7_EXTENSION) == 10
