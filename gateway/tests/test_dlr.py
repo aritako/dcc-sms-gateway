@@ -129,7 +129,7 @@ async def test_delivrd_marks_the_message_delivered_with_both_timestamps(client, 
   response = await post_dlr(client, dlr_body())
 
   assert response.status_code == 200
-  assert response.json() == {"result": "APPLIED"}
+  assert response.json() == {"result": "PROCESSED"}
   message = await session.get(Message, message_id)
   assert message is not None
   assert message.status == MessageStatus.DELIVERED
@@ -188,7 +188,7 @@ async def test_early_dlr_is_parked_then_reconciled_by_the_submit_response(
 
   parked = await post_dlr(client, dlr_body())
   assert parked.status_code == 200
-  assert parked.json() == {"result": "PARKED"}
+  assert parked.json() == {"result": "PENDING"}
   message = await session.get(Message, message_id)
   assert message is not None
   assert message.status == MessageStatus.ACCEPTED
@@ -278,7 +278,7 @@ async def test_sweep_reconciles_a_dlr_parked_before_the_carrier_id_was_saved(
 ) -> None:
   await create_tenant(session)
   message_id = UUID((await send_message(client)).json()["id"])
-  assert (await post_dlr(client, dlr_body())).json() == {"result": "PARKED"}
+  assert (await post_dlr(client, dlr_body())).json() == {"result": "PENDING"}
 
   # The worker saved the carrier id, but this DLR arrived just after its query.
   await session.execute(

@@ -115,7 +115,7 @@ async def ingest_dlr(
 ) -> str:
   """Record a receipt exactly once and apply it when its message is known.
 
-  Returns APPLIED, PARKED, DUPLICATE or REJECTED. The caller commits.
+  Returns PROCESSED, PENDING, DUPLICATE or REJECTED. The caller commits.
   """
   inbox = (
     await db.execute(
@@ -144,7 +144,7 @@ async def ingest_dlr(
   if message_id is None:
     # The carrier's DLR can beat the submit 200, so the message may not have
     # carrier_id yet; park it until the worker saves the id.
-    return "PARKED"
+    return DlrState.PENDING.value
 
   applied = await apply_terminal_dlr(
     db, message_id, status, occurred_at, inbox.received_at
@@ -158,7 +158,7 @@ async def ingest_dlr(
     )
     .execution_options(synchronize_session=False)
   )
-  return "APPLIED" if applied else "REJECTED"
+  return (DlrState.PROCESSED if applied else DlrState.REJECTED).value
 
 
 async def sweep_parked_dlrs(db: AsyncSession) -> int:
