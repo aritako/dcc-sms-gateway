@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from collections.abc import AsyncIterator
@@ -12,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from psycopg import sql
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 GATEWAY_ROOT = Path(__file__).resolve().parents[1]
@@ -68,23 +70,40 @@ async def _close_clients() -> AsyncIterator[None]:
 async def _clean_state(migrated_database: None) -> AsyncIterator[None]:
   """Truncate every domain table and the test Redis db after each test."""
   yield
-  async with get_engine().begin() as connection:
-    tables = (
-      (
-        await connection.execute(
-          text(
-            "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
-            "AND tablename <> 'alembic_version'"
-          )
-        )
-      )
-      .scalars()
-      .all()
-    )
-    if tables:
-      quoted = ", ".join(f'"{table}"' for table in tables)
-      await connection.execute(text(f"TRUNCATE {quoted} RESTART IDENTITY CASCADE"))
+  await _truncate_tables()
   await get_redis().flushdb()
+
+
+async def _truncate_tables() -> None:
+  """Empty the domain tables, retrying if a deadlock is detected.
+
+  TRUNCATE needs every table at once, so it can lose a race with a connection
+  that is still finishing a test's last statement. The victim's transaction is
+  rolled back, so a retry starts clean.
+  """
+  for attempt in range(3):
+    try:
+      async with get_engine().begin() as connection:
+        tables = (
+          (
+            await connection.execute(
+              text(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
+                "AND tablename <> 'alembic_version' ORDER BY tablename"
+              )
+            )
+          )
+          .scalars()
+          .all()
+        )
+        if tables:
+          quoted = ", ".join(f'"{table}"' for table in tables)
+          await connection.execute(text(f"TRUNCATE {quoted} RESTART IDENTITY CASCADE"))
+      return
+    except DBAPIError as error:
+      if "deadlock detected" not in str(error) or attempt == 2:
+        raise
+      await asyncio.sleep(0.05)
 
 
 @pytest.fixture
