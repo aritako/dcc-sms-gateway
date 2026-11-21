@@ -36,7 +36,7 @@ class Settings(BaseSettings):
   # delay would be 32 s and is capped at 30 s.
   max_submit_attempts: int = Field(default=6, ge=1)
   # Exponential backoff with jitter: base, 2x, 4x, ... capped before jitter.
-  retry_backoff_base_seconds: float = Field(default=1.0, gt=0)
+  retry_backoff_base_seconds: float = Field(default=1.0, ge=0.1)
   retry_backoff_cap_seconds: float = Field(default=30.0, gt=0)
 
 

@@ -7,6 +7,7 @@ import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.billing import BillingService
 from app.db.database import get_sessionmaker
 from app.db.models import (
   BillingState,
@@ -21,7 +22,7 @@ from app.db.models import (
 )
 from app.settings import get_settings
 from app.worker.dispatch import Dispatcher
-from tests.helpers import DEFAULT_KEY, create_tenant, send_message, sign_dlr
+from tests.helpers import DEFAULT_KEY, create_tenant, send_message, set_message, sign_dlr
 
 DLR_PATH = "/carrier/dlr"
 CARRIER_ID = "carrier-1"
@@ -134,13 +135,17 @@ async def test_transient_503_then_200_delivers_once_without_refund(client, sessi
     waiting = await fetch(session, message_id)
     assert waiting.status == MessageStatus.QUEUED  # never SUBMITTED -> QUEUED
     assert waiting.next_attempt_at is not None
-    assert await dispatcher.claim() == []  # the waiting retry is not hot-looped
+    retry_is_future = await session.scalar(
+      select(Message.next_attempt_at > func.now()).where(Message.id == UUID(message_id))
+    )
+    assert retry_is_future is True  # the waiting retry is not hot-looped
 
     await dispatcher.dispatch(claimed[0])
 
   submitted = await fetch(session, message_id)
   assert submitted.status == MessageStatus.SUBMITTED
   assert submitted.carrier_id == CARRIER_ID
+  assert submitted.next_attempt_at is None
 
   body = dlr_body()
   delivered = await client.post(DLR_PATH, content=body, headers=sign_dlr(body))
@@ -200,6 +205,16 @@ async def test_permanent_400_fails_after_one_attempt_with_one_refund(client, ses
   assert entries[0].amount_cents == 3
   assert entries[0].balance_after_cents == 10_000
   assert await tenant_balance(session) == 10_000
+  assert await event_statuses(session, message_id) == [
+    MessageStatus.ACCEPTED,
+    MessageStatus.QUEUED,
+    MessageStatus.FAILED,
+  ]
+
+  # A late 200 stores the carrier id as evidence but never rewrites the timeline.
+  await dispatcher.record_submitted(UUID(message_id), CARRIER_ID)
+  still_failed = await fetch(session, message_id)
+  assert still_failed.status == MessageStatus.FAILED
   assert await event_statuses(session, message_id) == [
     MessageStatus.ACCEPTED,
     MessageStatus.QUEUED,
@@ -407,3 +422,93 @@ async def test_claim_honours_next_attempt_at_and_does_not_hot_loop(client, sessi
   assert row.status == MessageStatus.QUEUED
   assert row.next_attempt_at is None  # claiming clears the retry schedule
   assert row.available_at > now + timedelta(seconds=20)  # and takes a fresh lease
+
+
+async def test_mixed_ambiguous_and_transient_exhaustion_flags_review(client, session) -> None:
+  await create_tenant(session)
+  message_id = (await send_message(client)).json()["id"]
+  calls = 0
+
+  def handler(request: httpx.Request) -> httpx.Response:
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      raise httpx.ReadTimeout("carrier response lost", request=request)
+    return httpx.Response(503, json={"error": "TEMPORARY_FAILURE"})
+
+  async with carrier_client(handler) as carrier:
+    dispatcher = make_dispatcher(carrier, max_submit_attempts=3)
+    claimed = await dispatcher.claim()
+    for _ in range(3):
+      await dispatcher.dispatch(claimed[0])
+
+  assert calls == 3
+  failed = await fetch(session, message_id)
+  assert failed.status == MessageStatus.FAILED
+  # One lost response is enough: the carrier may have accepted and billed it.
+  assert failed.billing_state == BillingState.REVIEW
+  assert await refunds(session) == []
+  assert await tenant_balance(session) == 9_997
+  assert [row.outcome for row in await attempts(session, message_id)] == [
+    SubmitOutcome.AMBIGUOUS,
+    SubmitOutcome.TRANSIENT,
+    SubmitOutcome.TRANSIENT,
+  ]
+
+
+async def test_network_error_is_transient_and_retried(client, session) -> None:
+  await create_tenant(session)
+  message_id = (await send_message(client)).json()["id"]
+  calls = 0
+
+  def handler(request: httpx.Request) -> httpx.Response:
+    nonlocal calls
+    calls += 1
+    if calls == 1:
+      raise httpx.ConnectError("connection refused", request=request)
+    return httpx.Response(200, json={"carrier_id": CARRIER_ID})
+
+  async with carrier_client(handler) as carrier:
+    dispatcher = make_dispatcher(carrier)
+    claimed = await dispatcher.claim()
+    await dispatcher.dispatch(claimed[0])
+    await dispatcher.dispatch(claimed[0])
+
+  submitted = await fetch(session, message_id)
+  assert submitted.status == MessageStatus.SUBMITTED
+  assert [row.outcome for row in await attempts(session, message_id)] == [
+    SubmitOutcome.TRANSIENT,
+    SubmitOutcome.ACCEPTED,
+  ]
+  assert await refunds(session) == []
+
+
+async def test_billing_refund_is_exactly_once(client, session) -> None:
+  tenant = await create_tenant(session)
+  message_id = UUID((await send_message(client)).json()["id"])
+  service = BillingService(session)
+
+  assert await service.refund(tenant.id, message_id, 3) is True
+  await session.commit()
+  assert await service.refund(tenant.id, message_id, 3) is False
+  await session.commit()
+
+  entries = await refunds(session)
+  assert len(entries) == 1
+  assert entries[0].amount_cents == 3
+  assert await tenant_balance(session) == 10_000
+
+
+async def test_fail_never_overwrites_an_accepted_message(client, session) -> None:
+  await create_tenant(session)
+  message_id = (await send_message(client)).json()["id"]
+  await set_message(session, UUID(message_id), status=MessageStatus.SUBMITTED)
+
+  dispatcher = make_dispatcher(None)
+  assert await dispatcher.fail(UUID(message_id), ambiguous=False) is False
+
+  accepted = await fetch(session, message_id)
+  assert accepted.status == MessageStatus.SUBMITTED
+  assert accepted.billing_state == BillingState.NORMAL
+  assert await refunds(session) == []
+  assert await tenant_balance(session) == 9_997

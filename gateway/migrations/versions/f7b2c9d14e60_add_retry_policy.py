@@ -69,17 +69,16 @@ def upgrade() -> None:
       ondelete="CASCADE",
     ),
     sa.PrimaryKeyConstraint("id", name="pk_submit_attempts"),
-  )
-  op.create_index(
-    "idx_submit_attempts_message_id_attempt_number",
-    "submit_attempts",
-    ["message_id", "attempt_number"],
+    sa.UniqueConstraint(
+      "message_id",
+      "attempt_number",
+      name="uq_submit_attempts_message_id_attempt_number",
+    ),
   )
 
 
 def downgrade() -> None:
   """Downgrade schema."""
-  op.drop_index("idx_submit_attempts_message_id_attempt_number", table_name="submit_attempts")
   op.drop_table("submit_attempts")
   op.drop_constraint("ck_messages_billing_state_valid", "messages", type_="check")
   op.drop_column("messages", "billing_state")

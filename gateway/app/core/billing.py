@@ -66,8 +66,11 @@ class BillingService:
     whose insert wins credits the tenant, so duplicate finalisers cannot
     double-refund. Returns False when a REFUND row already exists.
     """
-    if amount_cents <= 0:
-      raise ValueError("refund amount must be positive")
+    if amount_cents < 0:
+      raise ValueError("refund amount cannot be negative")
+    if amount_cents == 0:
+      # A free message has nothing to credit; FAILED must still commit.
+      return False
 
     balance = await self.db.scalar(
       select(Tenant.balance_cents).where(Tenant.id == tenant_id).with_for_update()

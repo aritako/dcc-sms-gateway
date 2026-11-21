@@ -250,10 +250,10 @@ class SubmitAttempt(Base):
       "http_status IS NULL OR http_status BETWEEN 100 AND 599",
       name="ck_submit_attempts_http_status_valid",
     ),
-    Index(
-      "idx_submit_attempts_message_id_attempt_number",
+    UniqueConstraint(
       "message_id",
       "attempt_number",
+      name="uq_submit_attempts_message_id_attempt_number",
     ),
   )
 

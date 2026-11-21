@@ -7,13 +7,12 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 from redis.exceptions import RedisError
-from sqlalchemy import case, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.billing import BillingService
 from app.core.dlr import (
-  NONTERMINAL_STATUS,
   lock_pending_receipts,
   reconcile_dlr,
   sweep_parked_dlrs,
@@ -162,7 +161,8 @@ class Dispatcher:
       await self.retry_or_fail(message.id)
       return
     except httpx.HTTPError as exc:
-      # Connection-level failure: the submit never produced an acceptance.
+      # A transport failure other than a timeout: the submit produced no
+      # acceptance, so this attempt is definitive rather than ambiguous.
       logger.info("submit of %s failed (%r); will retry", message.id, exc)
       await self.record_attempt(
         message.id, SubmitOutcome.TRANSIENT, None, repr(exc), started_at
@@ -172,10 +172,21 @@ class Dispatcher:
 
     finished_at = datetime.now(UTC)
     if response.status_code == 200:
+      carrier_id = self._carrier_id(response)
+      if carrier_id is None:
+        # A 200 is an acceptance, but without its carrier id the DLR cannot be
+        # linked. Treat it as ambiguous and let the retry budget park it for
+        # review instead of looping on the lease.
+        logger.warning("submit of %s returned 200 without a carrier_id", message.id)
+        await self.record_attempt(
+          message.id, SubmitOutcome.AMBIGUOUS, 200, "MISSING_CARRIER_ID", started_at, finished_at
+        )
+        await self.retry_or_fail(message.id)
+        return
       await self.record_attempt(
         message.id, SubmitOutcome.ACCEPTED, 200, None, started_at, finished_at
       )
-      await self.record_submitted(message.id, response.json()["carrier_id"])
+      await self.record_submitted(message.id, carrier_id)
       return
 
     error = self._error_code(response)
@@ -191,6 +202,18 @@ class Dispatcher:
     else:
       logger.info("submit of %s returned %s; will retry", message.id, response.status_code)
       await self.retry_or_fail(message.id)
+
+  @staticmethod
+  def _carrier_id(response: httpx.Response) -> str | None:
+    """The carrier's id from a 200 body, or None when the body is unusable."""
+    try:
+      payload = response.json()
+    except ValueError:
+      return None
+    if not isinstance(payload, dict):
+      return None
+    carrier_id = payload.get("carrier_id")
+    return carrier_id if isinstance(carrier_id, str) and carrier_id else None
 
   @staticmethod
   def _error_code(response: httpx.Response) -> str:
@@ -214,6 +237,13 @@ class Dispatcher:
   ) -> None:
     """Append one submit attempt in its own transaction, after the HTTP call."""
     async with self.sessions() as db:
+      # Serialise attempt numbering per message: the row lock is what makes
+      # max(attempt_number) + 1 unique when two workers race on one message.
+      locked = await db.scalar(
+        select(Message.id).where(Message.id == message_id).with_for_update()
+      )
+      if locked is None:
+        return
       attempt_number = (
         await db.scalar(
           select(func.coalesce(func.max(SubmitAttempt.attempt_number), 0) + 1).where(
@@ -244,10 +274,10 @@ class Dispatcher:
   async def retry_or_fail(self, message_id: uuid.UUID) -> None:
     """Schedule the next attempt, or settle the message once attempts run out.
 
-    Exhaustion after only ambiguous timeouts leaves the charge alone and flags
-    the message for review, because the carrier may have delivered and billed
-    it. Any definitive failure (permanent rejection or connection error) means
-    the carrier did not accept, so the charge is refunded exactly once.
+    Exhaustion with any ambiguous timeout leaves the charge alone and flags the
+    message for review, because the carrier may have delivered and billed that
+    attempt. Only definitive non-acceptance (a permanent rejection or every
+    attempt failing at the transport level) refunds the charge exactly once.
     """
     async with self.sessions() as db:
       outcomes = list(
@@ -262,7 +292,7 @@ class Dispatcher:
         .all()
       )
       if len(outcomes) >= self.max_attempts:
-        ambiguous = all(outcome == SubmitOutcome.AMBIGUOUS for outcome in outcomes)
+        ambiguous = any(outcome == SubmitOutcome.AMBIGUOUS for outcome in outcomes)
         await self._fail(db, message_id, ambiguous=ambiguous)
       else:
         await db.execute(
@@ -281,11 +311,16 @@ class Dispatcher:
       return failed
 
   async def _fail(self, db: AsyncSession, message_id: uuid.UUID, *, ambiguous: bool) -> bool:
-    """FAILED wins only from a non-terminal state; a late DLR keeps its outcome."""
+    """FAILED wins only before acceptance; a late DLR keeps its outcome.
+
+    `SUBMITTED` is deliberately excluded: once a submit was accepted, a stale
+    worker must not be able to fail and refund it. The DLR machine keeps its own
+    wider guard for receipts.
+    """
     row = (
       await db.execute(
         update(Message)
-        .where(Message.id == message_id, Message.status.in_(NONTERMINAL_STATUS))
+        .where(Message.id == message_id, Message.status.in_(CLAIMABLE))
         .values(
           status=MessageStatus.FAILED,
           final_at=func.coalesce(Message.final_at, func.now()),
@@ -304,9 +339,13 @@ class Dispatcher:
       .values(id=uuid.uuid7(), message_id=message_id, status=MessageStatus.FAILED)
       .on_conflict_do_nothing(index_elements=["message_id", "status"])
     )
-    if not ambiguous:
-      # Ambiguous exhaustion must not refund: the carrier may have delivered.
-      await BillingService(db).refund(row.tenant_id, message_id, row.total_price_cents)
+    if not ambiguous and row.total_price_cents > 0:
+      # Ambiguous attempts must not refund: the carrier may have delivered.
+      refunded = await BillingService(db).refund(
+        row.tenant_id, message_id, row.total_price_cents
+      )
+      if not refunded:
+        logger.warning("refund for %s was already recorded", message_id)
     return True
 
   async def record_submitted(self, message_id: uuid.UUID, carrier_id: str) -> None:
@@ -315,17 +354,24 @@ class Dispatcher:
     in if missing either way, so a late submit response still links the DLR.
 
     Any DLR parked for this carrier id is reconciled here, in the same transaction:
-    its SUBMITTED event is recorded first, then the terminal outcome is applied.
+    its SUBMITTED event is recorded first, then the terminal outcome is applied. A
+    FAILED message keeps its status, refund and timeline; only the carrier id is
+    stored as evidence.
     """
     async with self.sessions() as db:
+      previous = await db.scalar(
+        select(Message.status).where(Message.id == message_id).with_for_update()
+      )
+      if previous is None:
+        return
+      status = MessageStatus(previous)
+
       carrier = (
         await db.execute(
           update(Message)
           .where(Message.id == message_id)
           .values(
-            status=case(
-              (Message.status.in_(CLAIMABLE), MessageStatus.SUBMITTED), else_=Message.status
-            ),
+            status=MessageStatus.SUBMITTED if status in CLAIMABLE else status,
             carrier_id=func.coalesce(Message.carrier_id, carrier_id),
             submitted_at=func.coalesce(Message.submitted_at, func.now()),
             next_attempt_at=None,
@@ -335,6 +381,10 @@ class Dispatcher:
         )
       ).scalar_one_or_none()
       if carrier is None:
+        return
+      if status == MessageStatus.FAILED:
+        # NEVER append SUBMITTED after FAILED: the failed timeline and refund stand.
+        await db.commit()
         return
 
       pending_receipts = await lock_pending_receipts(db, carrier, carrier_id)
