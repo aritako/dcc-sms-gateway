@@ -75,13 +75,7 @@ unzip -l transcripts.zip
 
 ## Design
 
-[DESIGN.md](DESIGN.md) is the design record for the four required questions:
-crash after carrier accept (duplicate risk), where the system is at-least-once
-vs exactly-once and how it is proven, fairness at 50 tenants, and what breaks at
-1,000 messages/s. It also covers schema/locks/constraints, the
-Postgres-queue-vs-Redis choice, the timeout/refund policy including
-`billing_state=REVIEW`, status ordering, idempotency semantics, early/duplicate
-DLR handling and deferred work.
+[DESIGN.md](DESIGN.md) is the design record for the four required questions, plus some explanation about the system architecture. More details there.
 
 ## Secrets
 
@@ -103,15 +97,3 @@ are stored as SHA-256 hashes.
 - **Fairness** ships in its MVP form; the 50-tenant benchmark, configurable
   weights and queue-depth metrics remain post-MVP.
 
-## Ticket #22 checklist
-
-- [ ] `DESIGN.md` covers the four required questions (draft in progress on
-      `main`; #22).
-- [x] `README.md` covers setup, compose, seed keys, API examples, tests and a
-      real load run.
-- [x] Seven mandated tests mapped to files and commands in `TEST_MATRIX.md`.
-- [x] `make test-all` green and matches CI.
-- [x] Real load output committed.
-- [x] Migrations and seed are idempotent and exercised by compose.
-- [x] No secrets committed.
-- [ ] `transcripts.zip` built and committed at submission time.
