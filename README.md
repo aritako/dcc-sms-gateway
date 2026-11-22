@@ -44,7 +44,7 @@ carrier/              mock carrier: /submit, configurable faults, 50/s limit, si
 scripts/              smoke.py, send.py, load_test.py, run_1k.py, load-output/
 transcript/           session-export manifest (raw exports stay local and ignored)
 docker-compose.yaml   one-command stack; Makefile host-side tasks
-DESIGN.md             design answers and trade-offs (ticket #22)
+DESIGN.md             design answers and trade-offs
 ```
 
 1. `POST /v1/messages` validates E.164 and sender ID, encodes `GSM7`/`UCS2`,
